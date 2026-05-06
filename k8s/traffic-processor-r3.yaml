@@ -49,11 +49,11 @@ spec:
               value: "50"
             - name: QOS_CPU_CRITICAL
               value: "80"
-            # Memoria nodo (total-free): normal 500-530MB, crítico 611MB
+            # Memoria nodo (total-free): normal 570-600MB, picos 660-715MB
             - name: QOS_MEM_NORMAL_MB
-              value: "530"
+              value: "600"
             - name: QOS_MEM_CRITICAL_MB
-              value: "611"
+              value: "660"
 
           # startupProbe: da 90s para que arranque PIL+uvicorn en RPi3
           # Solo cuando pasa, k8s activa liveness y readiness.

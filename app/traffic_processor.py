@@ -35,10 +35,10 @@ OTEL_EXPORT_INTERVAL_MS = int(os.getenv("OTEL_EXPORT_INTERVAL_MS",   "5000"))
 # CPU: score=1.0 hasta NORMAL, cae a 0.0 en CRITICAL
 QOS_CPU_NORMAL          = float(os.getenv("QOS_CPU_NORMAL",   "50"))
 QOS_CPU_CRITICAL        = float(os.getenv("QOS_CPU_CRITICAL", "80"))
-# Memoria nodo (total - free, incluye buffers+cache) — coincide con herramientas de monitoreo
-# r3-node: normal 500-530MB, crítico 611MB
-QOS_MEM_NORMAL_MB       = float(os.getenv("QOS_MEM_NORMAL_MB",   "530"))
-QOS_MEM_CRITICAL_MB     = float(os.getenv("QOS_MEM_CRITICAL_MB", "611"))
+# Memoria nodo (total - free) — coincide con k8s_node_memory_usage_bytes
+# r3-node: normal 570-600MB, picos 660-715MB durante stress
+QOS_MEM_NORMAL_MB       = float(os.getenv("QOS_MEM_NORMAL_MB",   "600"))
+QOS_MEM_CRITICAL_MB     = float(os.getenv("QOS_MEM_CRITICAL_MB", "660"))
 
 # ── QoS state ─────────────────────────────────────────────────────────────────
 qos_lock = threading.Lock()
