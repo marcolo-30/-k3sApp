@@ -1,12 +1,11 @@
 """
 Smart City - Traffic Flow Processor  (RPi3-optimized)
 ======================================================
-Cambios vs versión anterior:
- - SIN numpy  → ahorra ~150MB RSS en ARM64 (principal causa del OOM)
- - OTEL lazy  → el servidor responde /health antes de que OTEL termine de iniciar
- - startupProbe friendly: uvicorn arranca en <5s, OTEL en background
- - detect_vehicles con PIL puro (getdata)
- - ThreadPoolExecutor para no bloquear el event loop durante PIL ops
+- SIN numpy  -> ahorra ~150MB RSS en ARM64
+- OTEL lazy  -> servidor responde /health antes de que OTEL inicie
+- detect_vehicles con PIL puro (getdata)
+- ThreadPoolExecutor para no bloquear el event loop
+- Memory score usa psutil.virtual_memory() == memoria total del nodo
 """
 
 import os, time, io, base64, threading, collections, json, asyncio, logging
@@ -24,21 +23,22 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger("traffic-processor")
 
 # ── Config ────────────────────────────────────────────────────────────────────
-SERVICE_NAME            = os.getenv("SERVICE_NAME",               "traffic-processor-r3")
-OTEL_ENDPOINT           = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT","http://otel-collector.observability:4318")
-PORT                    = int(os.getenv("PORT",                   "8080"))
+SERVICE_NAME            = os.getenv("SERVICE_NAME",                "traffic-processor-r3")
+OTEL_ENDPOINT           = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector.observability:4318")
+PORT                    = int(os.getenv("PORT",                    "8080"))
 QOS_LATENCY_BASELINE    = float(os.getenv("QOS_LATENCY_BASELINE",    "0.3"))
 QOS_THROUGHPUT_BASELINE = float(os.getenv("QOS_THROUGHPUT_BASELINE",  "2.0"))
 QOS_WINDOW_SECONDS      = int(os.getenv("QOS_WINDOW_SECONDS",         "30"))
 SERVER_PIPELINE_REPEATS = int(os.getenv("SERVER_PIPELINE_REPEATS",    "5"))
 MAX_IMAGE_MB            = float(os.getenv("MAX_IMAGE_MB",             "10.0"))
 OTEL_EXPORT_INTERVAL_MS = int(os.getenv("OTEL_EXPORT_INTERVAL_MS",   "5000"))
-# CPU thresholds — score=1.0 por debajo de NORMAL, 0.0 en CRITICAL
-QOS_CPU_NORMAL          = float(os.getenv("QOS_CPU_NORMAL",  "50"))  # % CPU normal
-QOS_CPU_CRITICAL        = float(os.getenv("QOS_CPU_CRITICAL","80"))  # % CPU → migrar
-# Memoria (RSS del proceso en MB) — RPi3 explota ~700MB a nivel nodo
-QOS_MEM_NORMAL_MB       = float(os.getenv("QOS_MEM_NORMAL_MB",  "250"))  # MB RSS normal
-QOS_MEM_CRITICAL_MB     = float(os.getenv("QOS_MEM_CRITICAL_MB","450"))  # MB RSS → migrar
+# CPU: score=1.0 hasta NORMAL, cae a 0.0 en CRITICAL
+QOS_CPU_NORMAL          = float(os.getenv("QOS_CPU_NORMAL",   "50"))
+QOS_CPU_CRITICAL        = float(os.getenv("QOS_CPU_CRITICAL", "80"))
+# Memoria sistema (nodo completo, MB) — coincide con kubectl top node
+# RPi3: normal ~664MB, picos 750MB, crash >750MB
+QOS_MEM_NORMAL_MB       = float(os.getenv("QOS_MEM_NORMAL_MB",   "670"))
+QOS_MEM_CRITICAL_MB     = float(os.getenv("QOS_MEM_CRITICAL_MB", "720"))
 
 # ── QoS state ─────────────────────────────────────────────────────────────────
 qos_lock = threading.Lock()
@@ -56,17 +56,17 @@ _start_time = time.time()
 HISTORY_LEN = 60
 history_lock = threading.Lock()
 history = {k: collections.deque(maxlen=HISTORY_LEN)
-           for k in ("composite","cpu","latency","vehicles","congestion","throughput","timestamps")}
+           for k in ("composite", "cpu", "latency", "vehicles",
+                     "congestion", "throughput", "timestamps")}
 
 sse_subscribers: list = []
 sse_lock = threading.Lock()
 
-# OTEL meter refs (None until lazy init completes)
 _frame_hist = None
-_otel_ready  = False
+_otel_ready = False
 
 
-# ── QoS compute loop ─────────────────────────────────────────────────────────
+# ── QoS compute loop ──────────────────────────────────────────────────────────
 def compute_qos_loop():
     while True:
         time.sleep(5)
@@ -87,12 +87,14 @@ def compute_qos_loop():
 
         avg_proc = sum(proc_times) / len(proc_times)
         cpu      = psutil.cpu_percent(interval=None)
-        mem_mb   = psutil.Process().memory_info().rss / (1024 * 1024)
+
+        # Memoria del sistema completo (nodo) — coincide con lo que el usuario monitorea
+        mem_mb = psutil.virtual_memory().used / (1024 * 1024)
 
         # Latencia
         latency_score = min(1.0, QOS_LATENCY_BASELINE / avg_proc) if avg_proc > 0 else 1.0
 
-        # CPU — zona normal sin penalización, caída lineal hasta crítico
+        # CPU
         if cpu <= QOS_CPU_NORMAL:
             cpu_score = 1.0
         elif cpu >= QOS_CPU_CRITICAL:
@@ -100,8 +102,7 @@ def compute_qos_loop():
         else:
             cpu_score = 1.0 - (cpu - QOS_CPU_NORMAL) / (QOS_CPU_CRITICAL - QOS_CPU_NORMAL)
 
-        # Memoria RSS — misma lógica que CPU
-        # RPi3: a ~450MB RSS el pod está cerca del límite de 512Mi
+        # Memoria sistema
         if mem_mb <= QOS_MEM_NORMAL_MB:
             memory_score = 1.0
         elif mem_mb >= QOS_MEM_CRITICAL_MB:
@@ -114,8 +115,7 @@ def compute_qos_loop():
         elapsed_w        = now - events[0][0] if len(events) > 1 else 1.0
         throughput_score = min(1.0, (wt / max(elapsed_w, 1)) / QOS_THROUGHPUT_BASELINE)
 
-        # Pesos recalibrados para incluir memoria:
-        #   latencia 35% · CPU 25% · memoria 25% · throughput 10% · rechazo 5%
+        # latencia 35% | CPU 25% | memoria 25% | throughput 10% | rechazo 5%
         composite = (latency_score    * 0.35
                    + cpu_score        * 0.25
                    + memory_score     * 0.25
@@ -124,18 +124,18 @@ def compute_qos_loop():
 
         with qos_lock:
             qos_state.update(
-                latency_score=round(latency_score, 4),
-                cpu_score=round(cpu_score, 4),
-                memory_score=round(memory_score, 4),
-                throughput_score=round(throughput_score, 4),
-                rejection_rate=round(rejection_rate, 4),
-                composite=round(composite, 4),
-                avg_proc_time=round(avg_proc, 4),
-                cpu_percent=round(cpu, 2),
-                mem_mb=round(mem_mb, 1),
-                vehicle_count_avg=round(sum(vehicles)/len(vehicles), 2) if vehicles else 0,
-                congestion_avg=round(sum(congestions)/len(congestions), 4) if congestions else 0,
-                uptime_s=int(now - _start_time),
+                latency_score    = round(latency_score,    4),
+                cpu_score        = round(cpu_score,        4),
+                memory_score     = round(memory_score,     4),
+                throughput_score = round(throughput_score, 4),
+                rejection_rate   = round(rejection_rate,   4),
+                composite        = round(composite,        4),
+                avg_proc_time    = round(avg_proc,         4),
+                cpu_percent      = round(cpu,              2),
+                mem_mb           = round(mem_mb,           1),
+                vehicle_count_avg= round(sum(vehicles)/len(vehicles), 2) if vehicles else 0,
+                congestion_avg   = round(sum(congestions)/len(congestions), 4) if congestions else 0,
+                uptime_s         = int(now - _start_time),
             )
 
         ts = time.strftime("%H:%M:%S")
@@ -151,36 +151,34 @@ def compute_qos_loop():
         with qos_lock:
             snap = dict(qos_state)
         snap["history"]      = {k: list(v) for k, v in history.items()}
-        snap["cpu_normal"]   = QOS_CPU_NORMAL      # para mostrarlo en el dashboard
+        snap["cpu_normal"]   = QOS_CPU_NORMAL
         snap["cpu_critical"] = QOS_CPU_CRITICAL
         snap["mem_normal"]   = QOS_MEM_NORMAL_MB
         snap["mem_critical"] = QOS_MEM_CRITICAL_MB
         _broadcast_sse(snap)
 
-        logger.info(f"QoS composite={composite:.3f} cpu={cpu:.1f}% "
-                    f"lat={avg_proc*1000:.0f}ms otel={'ok' if _otel_ready else 'init'}")
+        logger.info("QoS composite=%.3f cpu=%.1f%% mem=%.0fMB lat=%.0fms otel=%s",
+                    composite, cpu, mem_mb, avg_proc * 1000,
+                    "ok" if _otel_ready else "init")
 
 
 def _broadcast_sse(data: dict):
-    payload = f"data: {json.dumps(data)}\n\n"
+    payload = "data: " + json.dumps(data) + "\n\n"
     with sse_lock:
         dead = []
         for q in sse_subscribers:
-            try:    q.put_nowait(payload)
-            except: dead.append(q)
+            try:
+                q.put_nowait(payload)
+            except Exception:
+                dead.append(q)
         for q in dead:
             sse_subscribers.remove(q)
 
 
-# ── OTEL — lazy init en background ────────────────────────────────────────────
+# ── OTEL lazy init ────────────────────────────────────────────────────────────
 def _init_otel_background():
-    """
-    Arranca en un thread daemon DESPUÉS de que uvicorn ya respondió /health.
-    Si el collector no está disponible, falla silenciosamente.
-    """
     global _frame_hist, _otel_ready
     try:
-        # Import pesado dentro del thread, no en el arranque principal
         from opentelemetry import metrics as otel_metrics
         from opentelemetry.sdk.metrics import MeterProvider
         from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
@@ -188,51 +186,48 @@ def _init_otel_background():
         from opentelemetry.sdk.resources import Resource
 
         resource = Resource.create({"service.name": SERVICE_NAME})
-        exporter = OTLPMetricExporter(endpoint=f"{OTEL_ENDPOINT}/v1/metrics")
+        exporter = OTLPMetricExporter(endpoint=OTEL_ENDPOINT + "/v1/metrics")
         reader   = PeriodicExportingMetricReader(exporter,
                        export_interval_millis=OTEL_EXPORT_INTERVAL_MS)
         provider = MeterProvider(resource=resource, metric_readers=[reader])
         otel_metrics.set_meter_provider(provider)
         meter = otel_metrics.get_meter(SERVICE_NAME)
 
-        _frame_hist = meter.create_histogram(
-            "server_frame_processing_seconds", unit="s")
+        _frame_hist = meter.create_histogram("server_frame_processing_seconds", unit="s")
 
         def obs(name):
             def cb(_):
                 with qos_lock:
-                    yield otel_metrics.Observation(
-                        qos_state[name], {"service": SERVICE_NAME})
+                    yield otel_metrics.Observation(qos_state[name], {"service": SERVICE_NAME})
             return cb
 
-        for name in ("composite","latency_score","cpu_score","memory_score",
-                     "throughput_score","rejection_rate","cpu_percent",
-                     "avg_proc_time","mem_mb"):
-            meter.create_observable_gauge(f"qos_{name}", callbacks=[obs(name)])
-        meter.create_observable_gauge("traffic_vehicle_count_avg",
-                                      callbacks=[obs("vehicle_count_avg")])
-        meter.create_observable_gauge("traffic_congestion_level",
-                                      callbacks=[obs("congestion_avg")])
+        for name in ("composite", "latency_score", "cpu_score", "memory_score",
+                     "throughput_score", "rejection_rate", "cpu_percent",
+                     "avg_proc_time", "mem_mb"):
+            meter.create_observable_gauge("qos_" + name, callbacks=[obs(name)])
+        meter.create_observable_gauge("traffic_vehicle_count_avg", callbacks=[obs("vehicle_count_avg")])
+        meter.create_observable_gauge("traffic_congestion_level",  callbacks=[obs("congestion_avg")])
+
         _otel_ready = True
-        logger.info(f"OTEL listo → {OTEL_ENDPOINT}")
-    except Exception as e:
-        logger.warning(f"OTEL init fallido (continuando sin telemetría): {e}")
+        logger.info("OTEL listo -> %s", OTEL_ENDPOINT)
+    except Exception as exc:
+        logger.warning("OTEL init fallido (continuando sin telemetria): %s", exc)
 
 
 # ── FastAPI ───────────────────────────────────────────────────────────────────
 _executor = ThreadPoolExecutor(max_workers=2)
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # QoS loop
-    threading.Thread(target=compute_qos_loop, daemon=True).start()
-    # OTEL en background — NO bloquea el arranque del servidor
+    threading.Thread(target=compute_qos_loop,      daemon=True).start()
     threading.Thread(target=_init_otel_background, daemon=True).start()
-    logger.info(f"Traffic Processor listo  node={SERVICE_NAME}  port={PORT}")
+    logger.info("Traffic Processor listo  node=%s  port=%s", SERVICE_NAME, PORT)
     yield
     _executor.shutdown(wait=False)
 
-app = FastAPI(title="Smart City — Traffic Processor", version="1.1.0", lifespan=lifespan)
+
+app = FastAPI(title="Smart City Traffic Processor", version="1.2.0", lifespan=lifespan)
 
 
 # ── Modelos ───────────────────────────────────────────────────────────────────
@@ -242,37 +237,27 @@ class FrameRequest(BaseModel):
     operations: list = []
 
 
-# ── Procesamiento PIL puro (sin numpy) ────────────────────────────────────────
-def detect_vehicles(img: Image.Image) -> tuple[int, float]:
-    """
-    Detección de vehículos sin numpy.
-    Usa PIL getdata() → lista de tuplas RGB.
-    ~160×90 = 14 400 píxeles → rápido en RPi3, no necesita numpy.
-    """
+# ── Procesamiento PIL puro ────────────────────────────────────────────────────
+def detect_vehicles(img: Image.Image):
     small   = img.convert("RGB").resize((160, 90), Image.BILINEAR)
-    pixels  = list(small.getdata())   # list of (R,G,B)
-    total   = len(pixels)             # 14 400
+    pixels  = list(small.getdata())
+    total   = len(pixels)
     WIDTH   = 160
-
     vehicle_px = 0
     col_hit    = [False] * WIDTH
-
     for i, (r, g, b) in enumerate(pixels):
         sat = max(r, g, b) - min(r, g, b)
-        if sat > 45:                  # color saturado = vehículo
+        if sat > 45:
             vehicle_px += 1
             col_hit[i % WIDTH] = True
-
     congestion = vehicle_px / total
-
     count, in_blob = 0, False
     for v in col_hit:
         if v and not in_blob:
-            count  += 1
+            count += 1
             in_blob = True
         elif not v:
             in_blob = False
-
     return count, congestion
 
 
@@ -282,14 +267,13 @@ def apply_operations(img: Image.Image, operations: list) -> Image.Image:
         if   t == "blur":             img = img.filter(ImageFilter.GaussianBlur(op.get("radius", 2)))
         elif t == "sharpen":          img = img.filter(ImageFilter.SHARPEN)
         elif t == "grayscale":        img = img.convert("L").convert("RGB")
-        elif t == "resize":           img = img.resize((op.get("width",640), op.get("height",360)), Image.LANCZOS)
-        elif t == "enhance_contrast": img = ImageEnhance.Contrast(img).enhance(op.get("factor",1.5))
+        elif t == "resize":           img = img.resize((op.get("width", 640), op.get("height", 360)), Image.LANCZOS)
+        elif t == "enhance_contrast": img = ImageEnhance.Contrast(img).enhance(op.get("factor", 1.5))
         elif t == "edge_detect":      img = img.filter(ImageFilter.FIND_EDGES)
     return img
 
 
 def amplify_cpu(img: Image.Image) -> Image.Image:
-    """Carga CPU artificial — reducida a 5 repeats para no saturar RAM."""
     for _ in range(SERVER_PIPELINE_REPEATS):
         img = img.filter(ImageFilter.GaussianBlur(radius=1))
         img = img.filter(ImageFilter.SHARPEN)
@@ -305,7 +289,6 @@ def congestion_label(level: float) -> str:
     return "colapso"
 
 
-# ── Función sync (corre en ThreadPoolExecutor) ────────────────────────────────
 def _process_sync(raw: bytes, camera_id: str, operations: list) -> dict:
     start = time.time()
     img   = Image.open(io.BytesIO(raw))
@@ -325,12 +308,12 @@ def _process_sync(raw: bytes, camera_id: str, operations: list) -> dict:
         snap = dict(qos_state)
 
     return dict(
-        camera_id=camera_id,
-        vehicle_count=count,
-        congestion_level=round(cong, 4),
-        congestion_label=congestion_label(cong),
-        processing_time_s=round(elapsed, 4),
-        node=SERVICE_NAME,
+        camera_id        = camera_id,
+        vehicle_count    = count,
+        congestion_level = round(cong, 4),
+        congestion_label = congestion_label(cong),
+        processing_time_s= round(elapsed, 4),
+        node             = SERVICE_NAME,
         qos=dict(composite=snap["composite"], latency_score=snap["latency_score"],
                  cpu_score=snap["cpu_score"], cpu_percent=snap["cpu_percent"]),
         _meta=dict(elapsed=elapsed, count=count, cong=cong),
@@ -345,17 +328,13 @@ async def process_frame(req: FrameRequest, request: Request):
         raw = base64.b64decode(req.frame)
         if len(raw) > MAX_IMAGE_MB * 1024 * 1024:
             raise HTTPException(413, "Frame demasiado grande")
-
         loop   = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            _executor, _process_sync, raw, req.camera_id, req.operations)
-
+        result = await loop.run_in_executor(_executor, _process_sync, raw, req.camera_id, req.operations)
         m = result.pop("_meta")
-        logger.info(f"[{req.camera_id}] attempt={attempt} vehicles={m['count']} "
-                    f"congestion={m['cong']:.1%} proc={m['elapsed']:.3f}s "
-                    f"qos={result['qos']['composite']:.3f}")
+        logger.info("[%s] attempt=%s vehicles=%s congestion=%.1f%% proc=%.3fs qos=%.3f",
+                    req.camera_id, attempt, m["count"], m["cong"]*100,
+                    m["elapsed"], result["qos"]["composite"])
         return JSONResponse(result)
-
     except HTTPException:
         raise
     except Exception as exc:
@@ -363,13 +342,12 @@ async def process_frame(req: FrameRequest, request: Request):
             processing_events.append((time.time(), 0.0, False, 0, 0.0))
             qos_state["error_count"]    += 1
             qos_state["total_requests"] += 1
-        logger.error(f"Error: {exc}")
+        logger.error("Error procesando frame: %s", exc)
         raise HTTPException(500, str(exc))
 
 
 @app.get("/health")
 def health():
-    # Responde SIEMPRE de inmediato — sin esperar OTEL ni QoS
     return {"status": "ok", "service": SERVICE_NAME,
             "uptime_s": int(time.time() - _start_time),
             "otel": _otel_ready}
@@ -381,7 +359,6 @@ def get_qos():
         return dict(qos_state)
 
 
-# ── SSE stream ────────────────────────────────────────────────────────────────
 @app.get("/stream")
 async def sse_stream(request: Request):
     queue: asyncio.Queue = asyncio.Queue(maxsize=20)
@@ -389,11 +366,15 @@ async def sse_stream(request: Request):
         snap = dict(qos_state)
     with history_lock:
         snap["history"] = {k: list(v) for k, v in history.items()}
+    snap["cpu_normal"]   = QOS_CPU_NORMAL
+    snap["cpu_critical"] = QOS_CPU_CRITICAL
+    snap["mem_normal"]   = QOS_MEM_NORMAL_MB
+    snap["mem_critical"] = QOS_MEM_CRITICAL_MB
     with sse_lock:
         sse_subscribers.append(queue)
 
     async def generator():
-        yield f"data: {json.dumps(snap)}\n\n"
+        yield "data: " + json.dumps(snap) + "\n\n"
         try:
             while True:
                 if await request.is_disconnected():
@@ -408,18 +389,26 @@ async def sse_stream(request: Request):
                 if queue in sse_subscribers:
                     sse_subscribers.remove(queue)
 
-    return StreamingResponse(generator(), media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
-                 "Access-Control-Allow-Origin": "*"})
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
 
 
-# ── Dashboard HTML (cargado desde archivo) ───────────────────────────────────
+# ── Dashboard ─────────────────────────────────────────────────────────────────
 import pathlib as _pathlib
 _DASHBOARD_PATH = _pathlib.Path(__file__).parent / "dashboard.html"
+
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard():
     return HTMLResponse(content=_DASHBOARD_PATH.read_text(encoding="utf-8"))
+
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
