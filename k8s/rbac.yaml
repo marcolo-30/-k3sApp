@@ -1,0 +1,36 @@
+# ── RBAC para el Migration Controller ────────────────────────────────────────
+# Permite al migration controller (Fase 2) leer y modificar deployments
+# en el namespace smartcity para cambiar el nodeSelector.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: migration-controller
+  namespace: smartcity
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: migration-controller-role
+  namespace: smartcity
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: migration-controller-binding
+  namespace: smartcity
+subjects:
+  - kind: ServiceAccount
+    name: migration-controller
+    namespace: smartcity
+roleRef:
+  kind: Role
+  name: migration-controller-role
+  apiGroup: rbac.authorization.k8s.io

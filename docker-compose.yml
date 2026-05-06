@@ -1,0 +1,66 @@
+version: "3.9"
+
+# ── Smart City Traffic — Entorno local de desarrollo ──────────────────────────
+# Levanta processor + simulator localmente sin necesitar k3s.
+# El dashboard en vivo está en: http://localhost:8080/dashboard
+#
+# Uso:
+#   docker compose up --build
+#   docker compose up --build -d   (background)
+#   docker compose down
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Traffic Processor (servidor) ─────────────────────────────────────────
+  traffic-processor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: traffic-processor
+    command: ["python", "traffic_processor.py"]
+    ports:
+      - "8080:8080"       # API + /dashboard + /qos + /stream
+    environment:
+      SERVICE_NAME:              "traffic-processor-local"
+      PORT:                      "8080"
+      # En local el collector no existe → OTEL loguea warnings pero no bloquea
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://localhost:4318"
+      QOS_LATENCY_BASELINE:      "0.05"   # baseline bajo para que QoS sea sensible
+      QOS_THROUGHPUT_BASELINE:   "3.0"
+      QOS_WINDOW_SECONDS:        "20"
+      # Reducir repeats localmente para no saturar tu máquina
+      SERVER_PIPELINE_REPEATS:   "3"
+      MAX_IMAGE_MB:              "10.0"
+      OTEL_EXPORT_INTERVAL_MS:   "5000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # ── Camera Simulator (cliente) ────────────────────────────────────────────
+  camera-simulator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: camera-simulator
+    command: ["python", "camera_simulator.py", "--continuous"]
+    depends_on:
+      traffic-processor:
+        condition: service_healthy
+    environment:
+      SERVICE_NAME:              "camera-simulator-local"
+      SERVICE_ENDPOINT:          "http://traffic-processor:8080"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://localhost:4318"
+      REQUEST_INTERVAL:          "0.4"
+      NUM_CAMERAS:               "2"        # 2 cámaras localmente
+      MAX_VEHICLES:              "12"
+      FRAME_WIDTH:               "640"
+      FRAME_HEIGHT:              "360"
+      TRAFFIC_WAVE:              "true"     # ola de tráfico cada 2 min
+      MAX_RETRIES:               "3"
+      OTEL_EXPORT_INTERVAL_MS:   "5000"
+    restart: unless-stopped

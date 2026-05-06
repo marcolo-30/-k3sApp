@@ -1,0 +1,76 @@
+# ── Traffic Processor — nodo r3-node (RPi3) ──────────────────────────────────
+# Deployment inicial. El migration controller lo migra a vm1node
+# cambiando el nodeSelector via kubectl patch.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traffic-processor
+  namespace: smartcity
+  labels:
+    app: traffic-processor
+    version: r3
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: traffic-processor
+  template:
+    metadata:
+      labels:
+        app: traffic-processor
+        version: r3
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: r3-node
+
+      containers:
+        - name: traffic-processor
+          image: ghcr.io/marcolo-30/k3sapp:latest
+          command: ["python", "traffic_processor.py"]
+          ports:
+            - containerPort: 8080
+              name: http
+
+          env:
+            - name: SERVICE_NAME
+              value: "traffic-processor-r3"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4318"
+            # Baseline calibrado para RPi3 (más lento)
+            - name: QOS_LATENCY_BASELINE
+              value: "0.3"
+            - name: QOS_THROUGHPUT_BASELINE
+              value: "2.0"
+            - name: QOS_WINDOW_SECONDS
+              value: "30"
+            # Amplificación de carga: sube para que el RPi3 se sature antes
+            - name: SERVER_PIPELINE_REPEATS
+              value: "8"
+            - name: PORT
+              value: "8080"
+            - name: OTEL_EXPORT_INTERVAL_MS
+              value: "5000"
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 5
+
+          resources:
+            requests:
+              cpu:    "200m"
+              memory: "256Mi"
+            limits:
+              # Sin límite de CPU para que se note la saturación real del nodo
+              memory: "512Mi"

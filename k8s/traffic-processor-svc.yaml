@@ -1,0 +1,20 @@
+# ── Service: traffic-processor ────────────────────────────────────────────────
+# Selector apunta a cualquier pod con app=traffic-processor,
+# sin importar si está en r3-node o vm1node tras la migración.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: traffic-processor-svc
+  namespace: smartcity
+  labels:
+    app: traffic-processor
+spec:
+  selector:
+    app: traffic-processor
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      nodePort: 30080
+  type: NodePort

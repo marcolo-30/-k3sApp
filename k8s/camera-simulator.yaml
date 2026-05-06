@@ -1,0 +1,62 @@
+# ── Camera Simulator (cliente de tráfico) ─────────────────────────────────────
+# Corre en r3-node para simular cámaras de edge.
+# Genera frames JPEG con vehículos sintéticos y los envía al processor.
+# Usa TRAFFIC_WAVE=true para crear olas de tráfico que saturan el RPi3.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: camera-simulator
+  namespace: smartcity
+  labels:
+    app: camera-simulator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: camera-simulator
+  template:
+    metadata:
+      labels:
+        app: camera-simulator
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: r3-node
+
+      containers:
+        - name: camera-simulator
+          image: ghcr.io/marcolo-30/k3sapp:latest
+          command: ["python", "camera_simulator.py", "--continuous"]
+
+          env:
+            - name: SERVICE_ENDPOINT
+              value: "http://traffic-processor-svc:8080"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4318"
+            - name: SERVICE_NAME
+              value: "camera-simulator"
+            # Intervalo entre frames por cámara
+            - name: REQUEST_INTERVAL
+              value: "0.4"
+            # 3 cámaras en paralelo = carga alta para el RPi3
+            - name: NUM_CAMERAS
+              value: "3"
+            - name: MAX_VEHICLES
+              value: "15"
+            - name: FRAME_WIDTH
+              value: "640"
+            - name: FRAME_HEIGHT
+              value: "360"
+            # Olas de tráfico automáticas cada 120s
+            - name: TRAFFIC_WAVE
+              value: "true"
+            - name: MAX_RETRIES
+              value: "3"
+
+          resources:
+            requests:
+              cpu:    "100m"
+              memory: "128Mi"
+            limits:
+              cpu:    "500m"
+              memory: "256Mi"

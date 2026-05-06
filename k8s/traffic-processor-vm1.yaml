@@ -1,0 +1,79 @@
+# ── Traffic Processor — nodo vm1node ─────────────────────────────────────────
+# Deployment alternativo en vm1node.
+# El migration controller aplica este patch cuando QoS cae en r3-node:
+#
+#   kubectl patch deployment traffic-processor -n smartcity \
+#     -p '{"spec":{"template":{"spec":{"nodeSelector":{"kubernetes.io/hostname":"vm1node"}}}}}'
+#
+# Este archivo sirve como referencia de la configuración objetivo (vm1node).
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traffic-processor
+  namespace: smartcity
+  labels:
+    app: traffic-processor
+    version: vm1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: traffic-processor
+  template:
+    metadata:
+      labels:
+        app: traffic-processor
+        version: vm1
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: vm1node
+
+      containers:
+        - name: traffic-processor
+          image: ghcr.io/marcolo-30/k3sapp:latest
+          command: ["python", "traffic_processor.py"]
+          ports:
+            - containerPort: 8080
+              name: http
+
+          env:
+            - name: SERVICE_NAME
+              value: "traffic-processor-vm1"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability:4318"
+            # Baseline más alto porque vm1 es mucho más rápido
+            - name: QOS_LATENCY_BASELINE
+              value: "0.08"
+            - name: QOS_THROUGHPUT_BASELINE
+              value: "8.0"
+            - name: QOS_WINDOW_SECONDS
+              value: "30"
+            # Menos amplificación: vm1 puede con más sin saturarse
+            - name: SERVER_PIPELINE_REPEATS
+              value: "2"
+            - name: PORT
+              value: "8080"
+            - name: OTEL_EXPORT_INTERVAL_MS
+              value: "5000"
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+
+          resources:
+            requests:
+              cpu:    "500m"
+              memory: "512Mi"
+            limits:
+              memory: "1Gi"

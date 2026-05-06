@@ -1,0 +1,250 @@
+{
+  "__inputs": [],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" }
+  ],
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "title": "📊 QoS — Calidad de Servicio",
+      "type": "row"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",    "value": 0   },
+              { "color": "yellow", "value": 0.5 },
+              { "color": "green",  "value": 0.7 }
+            ]
+          },
+          "min": 0, "max": 1,
+          "mappings": [],
+          "unit": "percentunit"
+        }
+      },
+      "gridPos": { "h": 5, "w": 4, "x": 0, "y": 1 },
+      "id": 1,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "showThresholdLabels": false, "showThresholdMarkers": true },
+      "title": "QoS Composite",
+      "type": "gauge",
+      "targets": [{ "expr": "qos_composite{service=~\"traffic-processor.*\"}", "legendFormat": "{{service}}" }]
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 0.5 }, { "color": "red", "value": 0.7 }] },
+          "unit": "percentunit", "min": 0, "max": 1
+        }
+      },
+      "gridPos": { "h": 5, "w": 4, "x": 4, "y": 1 },
+      "id": 2,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "showThresholdLabels": false, "showThresholdMarkers": true },
+      "title": "CPU Score (inverso)",
+      "type": "gauge",
+      "targets": [{ "expr": "qos_cpu_score{service=~\"traffic-processor.*\"}", "legendFormat": "{{service}}" }]
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 0.5 }, { "color": "red", "value": 0.8 }] },
+          "unit": "percent", "min": 0, "max": 100
+        }
+      },
+      "gridPos": { "h": 5, "w": 4, "x": 8, "y": 1 },
+      "id": 3,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "showThresholdLabels": false, "showThresholdMarkers": true },
+      "title": "CPU %",
+      "type": "gauge",
+      "targets": [{ "expr": "qos_cpu_percent{service=~\"traffic-processor.*\"}", "legendFormat": "{{service}}" }]
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 0.5 }, { "color": "red", "value": 0.8 }] },
+          "unit": "s", "min": 0
+        }
+      },
+      "gridPos": { "h": 5, "w": 4, "x": 12, "y": 1 },
+      "id": 4,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "showThresholdLabels": false, "showThresholdMarkers": true },
+      "title": "Avg Proc Time",
+      "type": "gauge",
+      "targets": [{ "expr": "qos_avg_proc_time{service=~\"traffic-processor.*\"}", "legendFormat": "{{service}}" }]
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "fixed", "fixedColor": "purple" } } },
+      "gridPos": { "h": 5, "w": 4, "x": 16, "y": 1 },
+      "id": 5,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto" },
+      "title": "Vehículos Avg",
+      "type": "stat",
+      "targets": [{ "expr": "traffic_vehicle_count_avg{service=~\"traffic-processor.*\"}", "legendFormat": "{{service}}" }]
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 0.3 }, { "color": "red", "value": 0.6 }] },
+          "unit": "percentunit", "min": 0, "max": 1
+        }
+      },
+      "gridPos": { "h": 5, "w": 4, "x": 20, "y": 1 },
+      "id": 6,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "showThresholdMarkers": true },
+      "title": "Congestión Avg",
+      "type": "gauge",
+      "targets": [{ "expr": "traffic_congestion_level{service=~\"traffic-processor.*\"}", "legendFormat": "{{service}}" }]
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 },
+      "id": 101,
+      "title": "📈 Series Temporales",
+      "type": "row"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "min": 0, "max": 1, "color": { "mode": "palette-classic" } },
+        "overrides": [{ "matcher": { "id": "byName", "options": "Umbral migración" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }, { "id": "custom.lineStyle", "value": { "dash": [8, 4], "fill": "dash" } }] }]
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 7 },
+      "id": 10,
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "title": "QoS Composite por nodo",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "qos_composite{service=~\"traffic-processor.*\"}", "legendFormat": "{{service}}" },
+        { "expr": "vector(0.5)", "legendFormat": "Umbral migración" }
+      ]
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "color": { "mode": "palette-classic" } } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 7 },
+      "id": 11,
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "title": "CPU % por nodo",
+      "type": "timeseries",
+      "targets": [{ "expr": "qos_cpu_percent{service=~\"traffic-processor.*\"}", "legendFormat": "{{service}}" }]
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "s", "min": 0, "color": { "mode": "palette-classic" } } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "id": 12,
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "title": "Latencia de procesamiento de frames",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "qos_avg_proc_time{service=~\"traffic-processor.*\"}", "legendFormat": "processor {{service}}" },
+        { "expr": "histogram_quantile(0.95, rate(client_request_latency_seconds_bucket{service=\"camera-simulator\"}[1m]))", "legendFormat": "client p95" },
+        { "expr": "histogram_quantile(0.50, rate(client_request_latency_seconds_bucket{service=\"camera-simulator\"}[1m]))", "legendFormat": "client p50" }
+      ]
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "color": { "mode": "palette-classic" } } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "id": 13,
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "title": "Vehículos detectados & Congestión",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "traffic_vehicle_count_avg{service=~\"traffic-processor.*\"}", "legendFormat": "vehículos avg" },
+        { "expr": "traffic_congestion_level{service=~\"traffic-processor.*\"} * 20", "legendFormat": "congestión ×20 (escala)" }
+      ]
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+      "id": 102,
+      "title": "🔄 Cliente — Camera Simulator",
+      "type": "row"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "min": 0, "color": { "mode": "palette-classic" } } },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 24 },
+      "id": 20,
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "title": "Tasa de frames enviados (req/s)",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "rate(client_requests_total{service=\"camera-simulator\",status=\"success\"}[1m])", "legendFormat": "éxitos/s" },
+        { "expr": "rate(client_requests_total{service=\"camera-simulator\",status=\"error\"}[1m])", "legendFormat": "errores/s" }
+      ]
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "min": 0, "color": { "mode": "palette-classic" } } },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 24 },
+      "id": 21,
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "title": "Reintentos del cliente (req/s)",
+      "type": "timeseries",
+      "targets": [{ "expr": "rate(client_retries_total{service=\"camera-simulator\"}[1m])", "legendFormat": "reintentos/s {{camera}}" }]
+    }
+
+  ],
+  "refresh": "5s",
+  "schemaVersion": 38,
+  "tags": ["smartcity", "traffic", "qos", "k3s"],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Smart City — Traffic Flow Monitor",
+  "uid": "smartcity-traffic-v1",
+  "version": 1
+}
