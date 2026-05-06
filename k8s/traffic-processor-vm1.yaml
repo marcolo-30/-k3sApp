@@ -61,11 +61,11 @@ spec:
               value: "60"
             - name: QOS_CPU_CRITICAL
               value: "90"
-            # Memoria sistema vm1 — tiene más RAM, thresholds mucho más altos
+            # Memoria RSS del proceso vm1 — límite pod 1Gi, más holgura
             - name: QOS_MEM_NORMAL_MB
-              value: "1500"
+              value: "300"
             - name: QOS_MEM_CRITICAL_MB
-              value: "2500"
+              value: "700"
 
           livenessProbe:
             httpGet:

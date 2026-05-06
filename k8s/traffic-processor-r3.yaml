@@ -49,12 +49,12 @@ spec:
               value: "50"
             - name: QOS_CPU_CRITICAL
               value: "80"
-            # Memoria sistema (nodo): normal 664MB, crash >750MB
-            # score=1.0 hasta 670MB, cae a 0.0 en 720MB → migrar antes del crash
+            # Memoria RSS del proceso: normal ~150-200MB, límite pod 512Mi
+            # score=1.0 hasta 200MB, cae a 0.0 en 400MB → migrar antes del OOM
             - name: QOS_MEM_NORMAL_MB
-              value: "670"
+              value: "200"
             - name: QOS_MEM_CRITICAL_MB
-              value: "720"
+              value: "400"
 
           # startupProbe: da 90s para que arranque PIL+uvicorn en RPi3
           # Solo cuando pasa, k8s activa liveness y readiness.
