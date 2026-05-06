@@ -399,4 +399,29 @@ async def sse_stream(request: Request):
                 if await request.is_disconnected():
                     break
                 try:
-                    msg = await asyncio.wait_for(queue.get(
+                    msg = await asyncio.wait_for(queue.get(), timeout=15)
+                    yield msg
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            with sse_lock:
+                if queue in sse_subscribers:
+                    sse_subscribers.remove(queue)
+
+    return StreamingResponse(generator(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+                 "Access-Control-Allow-Origin": "*"})
+
+
+# ── Dashboard HTML (cargado desde archivo) ───────────────────────────────────
+import pathlib as _pathlib
+_DASHBOARD_PATH = _pathlib.Path(__file__).parent / "dashboard.html"
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard():
+    return HTMLResponse(content=_DASHBOARD_PATH.read_text(encoding="utf-8"))
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
