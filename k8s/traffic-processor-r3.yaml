@@ -1,7 +1,3 @@
-# ── Traffic Processor — nodo r3-node (RPi3) ──────────────────────────────────
-# Deployment inicial. El migration controller lo migra a vm1node
-# cambiando el nodeSelector via kubectl patch.
-# ─────────────────────────────────────────────────────────────────────────────
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -30,47 +26,56 @@ spec:
           command: ["python", "traffic_processor.py"]
           ports:
             - containerPort: 8080
-              name: http
 
           env:
             - name: SERVICE_NAME
               value: "traffic-processor-r3"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://otel-collector.observability:4318"
-            # Baseline calibrado para RPi3 (más lento)
             - name: QOS_LATENCY_BASELINE
               value: "0.3"
             - name: QOS_THROUGHPUT_BASELINE
               value: "2.0"
             - name: QOS_WINDOW_SECONDS
               value: "30"
-            # Amplificación de carga: sube para que el RPi3 se sature antes
             - name: SERVER_PIPELINE_REPEATS
-              value: "8"
+              value: "5"
             - name: PORT
               value: "8080"
             - name: OTEL_EXPORT_INTERVAL_MS
               value: "5000"
 
+          # startupProbe: da 90s para que arranque PIL+uvicorn en RPi3
+          # Solo cuando pasa, k8s activa liveness y readiness.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            failureThreshold: 18    # 18 * 5s = 90s máximo para arrancar
+            periodSeconds: 5
+            timeoutSeconds: 3
+
           livenessProbe:
             httpGet:
               path: /health
               port: 8080
-            initialDelaySeconds: 20
-            periodSeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
             failureThreshold: 3
 
           readinessProbe:
             httpGet:
               path: /health
               port: 8080
-            initialDelaySeconds: 15
-            periodSeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
 
           resources:
             requests:
               cpu:    "200m"
               memory: "256Mi"
             limits:
-              # Sin límite de CPU para que se note la saturación real del nodo
+              # 512Mi suficiente sin numpy (PIL+FastAPI+OTEL ≈ 150-200MB)
               memory: "512Mi"
+              # Sin límite de CPU para que el benchmark sea realista
