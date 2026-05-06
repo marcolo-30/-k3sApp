@@ -35,10 +35,10 @@ OTEL_EXPORT_INTERVAL_MS = int(os.getenv("OTEL_EXPORT_INTERVAL_MS",   "5000"))
 # CPU: score=1.0 hasta NORMAL, cae a 0.0 en CRITICAL
 QOS_CPU_NORMAL          = float(os.getenv("QOS_CPU_NORMAL",   "50"))
 QOS_CPU_CRITICAL        = float(os.getenv("QOS_CPU_CRITICAL", "80"))
-# Memoria RSS del proceso (MB) — lo que el pod realmente consume
-# r3-node: proceso normal ~150-200MB, límite pod 512Mi → crítico a 400MB
-QOS_MEM_NORMAL_MB       = float(os.getenv("QOS_MEM_NORMAL_MB",   "200"))
-QOS_MEM_CRITICAL_MB     = float(os.getenv("QOS_MEM_CRITICAL_MB", "400"))
+# Memoria nodo (total - free, incluye buffers+cache) — coincide con herramientas de monitoreo
+# r3-node: normal 500-530MB, crítico 611MB
+QOS_MEM_NORMAL_MB       = float(os.getenv("QOS_MEM_NORMAL_MB",   "530"))
+QOS_MEM_CRITICAL_MB     = float(os.getenv("QOS_MEM_CRITICAL_MB", "611"))
 
 # ── QoS state ─────────────────────────────────────────────────────────────────
 qos_lock = threading.Lock()
@@ -88,8 +88,9 @@ def compute_qos_loop():
         avg_proc = sum(proc_times) / len(proc_times)
         cpu      = psutil.cpu_percent(interval=None)
 
-        # Memoria RSS del proceso — lo que el pod realmente ocupa en RAM
-        mem_mb = psutil.Process().memory_info().rss / (1024 * 1024)
+        # Memoria nodo: total - free (incluye buffers+cache, coincide con monitoreo externo)
+        vm     = psutil.virtual_memory()
+        mem_mb = (vm.total - vm.free) / (1024 * 1024)
 
         # Latencia
         latency_score = min(1.0, QOS_LATENCY_BASELINE / avg_proc) if avg_proc > 0 else 1.0
