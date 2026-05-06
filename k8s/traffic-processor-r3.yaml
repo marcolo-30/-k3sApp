@@ -22,7 +22,7 @@ spec:
 
       containers:
         - name: traffic-processor
-          image: ghcr.io/marcolo-30/k3sapp:6d2ad8df6abad44cb8d1d604189656fcfdb1bb58
+          image: ghcr.io/marcolo-30/k3sapp:0962fdb9281930005b53bc40fce5e6d5c17873f3
           command: ["python", "traffic_processor.py"]
           ports:
             - containerPort: 8080
@@ -49,11 +49,12 @@ spec:
               value: "50"
             - name: QOS_CPU_CRITICAL
               value: "80"
-            # Memoria RSS del proceso: RPi3 falla ~700MB nodo → 450MB pod = límite
+            # Memoria sistema (nodo): normal 664MB, crash >750MB
+            # score=1.0 hasta 670MB, cae a 0.0 en 720MB → migrar antes del crash
             - name: QOS_MEM_NORMAL_MB
-              value: "250"
+              value: "670"
             - name: QOS_MEM_CRITICAL_MB
-              value: "450"
+              value: "720"
 
           # startupProbe: da 90s para que arranque PIL+uvicorn en RPi3
           # Solo cuando pasa, k8s activa liveness y readiness.
@@ -79,4 +80,13 @@ spec:
               port: 8080
             periodSeconds: 10
             timeoutSeconds: 5
-            
+            failureThreshold: 3
+
+          resources:
+            requests:
+              cpu:    "200m"
+              memory: "256Mi"
+            limits:
+              # 512Mi suficiente sin numpy (PIL+FastAPI+OTEL ≈ 150-200MB)
+              memory: "512Mi"
+              # Sin límite de CPU para que el benchmark sea realista

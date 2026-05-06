@@ -31,7 +31,7 @@ spec:
 
       containers:
         - name: traffic-processor
-          image: ghcr.io/marcolo-30/k3sapp:6d2ad8df6abad44cb8d1d604189656fcfdb1bb58
+          image: ghcr.io/marcolo-30/k3sapp:0962fdb9281930005b53bc40fce5e6d5c17873f3
           command: ["python", "traffic_processor.py"]
           ports:
             - containerPort: 8080
@@ -61,8 +61,29 @@ spec:
               value: "60"
             - name: QOS_CPU_CRITICAL
               value: "90"
-            # vm1 tiene más RAM — thresholds más altos que RPi3
+            # Memoria sistema vm1 — tiene más RAM, thresholds mucho más altos
             - name: QOS_MEM_NORMAL_MB
-              value: "512"
+              value: "1500"
             - name: QOS_MEM_CRITICAL_MB
-        
+              value: "2500"
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+
+          resources:
+            requests:
+              cpu:    "500m"
+              memory: "512Mi"
+            limits:
+              memory: "1Gi"
