@@ -44,6 +44,16 @@ spec:
               value: "8080"
             - name: OTEL_EXPORT_INTERVAL_MS
               value: "5000"
+            # CPU score: 1.0 hasta 50%, cae a 0.0 en 80% → migrar
+            - name: QOS_CPU_NORMAL
+              value: "50"
+            - name: QOS_CPU_CRITICAL
+              value: "80"
+            # Memoria RSS del proceso: RPi3 falla ~700MB nodo → 450MB pod = límite
+            - name: QOS_MEM_NORMAL_MB
+              value: "250"
+            - name: QOS_MEM_CRITICAL_MB
+              value: "450"
 
           # startupProbe: da 90s para que arranque PIL+uvicorn en RPi3
           # Solo cuando pasa, k8s activa liveness y readiness.
@@ -69,13 +79,4 @@ spec:
               port: 8080
             periodSeconds: 10
             timeoutSeconds: 5
-            failureThreshold: 3
-
-          resources:
-            requests:
-              cpu:    "200m"
-              memory: "256Mi"
-            limits:
-              # 512Mi suficiente sin numpy (PIL+FastAPI+OTEL ≈ 150-200MB)
-              memory: "512Mi"
-              # Sin límite de CPU para que el benchmark sea realista
+            

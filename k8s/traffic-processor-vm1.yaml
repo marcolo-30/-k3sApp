@@ -56,24 +56,13 @@ spec:
               value: "8080"
             - name: OTEL_EXPORT_INTERVAL_MS
               value: "5000"
-
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 8080
-            initialDelaySeconds: 15
-            periodSeconds: 10
-
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: 8080
-            initialDelaySeconds: 10
-            periodSeconds: 5
-
-          resources:
-            requests:
-              cpu:    "500m"
-              memory: "512Mi"
-            limits:
-              memory: "1Gi"
+            # vm1 es más potente — zona normal hasta 60%, crítico en 90%
+            - name: QOS_CPU_NORMAL
+              value: "60"
+            - name: QOS_CPU_CRITICAL
+              value: "90"
+            # vm1 tiene más RAM — thresholds más altos que RPi3
+            - name: QOS_MEM_NORMAL_MB
+              value: "512"
+            - name: QOS_MEM_CRITICAL_MB
+        

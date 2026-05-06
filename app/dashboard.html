@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart City Traffic</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{--bg:#0f172a;--card:#1e293b;--border:#334155;--text:#e2e8f0;--muted:#94a3b8;
+--green:#22c55e;--yellow:#eab308;--red:#ef4444;--blue:#3b82f6;--cyan:#06b6d4;--purple:#a855f7}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:system-ui,monospace;padding:16px}
+h1{font-size:18px;font-weight:700;margin-bottom:4px}
+.sub{font-size:12px;color:var(--muted);margin-bottom:20px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);margin-right:6px;animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px}
+.lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
+.val{font-size:28px;font-weight:700;font-variant-numeric:tabular-nums}
+.sub2{font-size:11px;color:var(--muted);margin-top:3px}
+.bar{height:6px;background:var(--border);border-radius:3px;margin-top:8px}
+.bf{height:100%;border-radius:3px;transition:width .5s}
+.ct{font-size:12px;font-weight:600;color:var(--muted);margin-bottom:10px}
+canvas{max-height:160px}
+.qr{display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:8px}
+.qn{color:var(--muted);width:140px;flex-shrink:0}
+.qb{flex:1;height:10px;background:var(--border);border-radius:5px;overflow:hidden}
+.qbf{height:100%;border-radius:5px;transition:width .5s}
+.qv{width:40px;text-align:right;font-size:11px;font-weight:600}
+</style>
+</head>
+<body>
+<h1><span class="dot" id="dot"></span>Smart City &mdash; Traffic Monitor</h1>
+<p class="sub" id="info">Conectando...</p>
+
+<div class="g4">
+  <div class="card">
+    <div class="lbl">QoS Composite</div>
+    <div class="val" id="vqos" style="color:var(--green)">-</div>
+    <div class="bar"><div class="bf" id="bqos" style="background:var(--green);width:0"></div></div>
+    <div class="sub2">umbral migracion: 0.50</div>
+  </div>
+  <div class="card">
+    <div class="lbl">CPU</div>
+    <div class="val" id="vcpu" style="color:var(--cyan)">-</div>
+    <div class="bar"><div class="bf" id="bcpu" style="background:var(--cyan);width:0"></div></div>
+    <div class="sub2" id="scpu">-</div>
+  </div>
+  <div class="card">
+    <div class="lbl">Memoria RSS</div>
+    <div class="val" id="vmem" style="color:var(--yellow)">-</div>
+    <div class="bar"><div class="bf" id="bmem" style="background:var(--yellow);width:0"></div></div>
+    <div class="sub2" id="smem">normal: -MB  critico: -MB</div>
+  </div>
+  <div class="card">
+    <div class="lbl">Latencia</div>
+    <div class="val" id="vlat" style="color:var(--blue)">-</div>
+    <div class="sub2">ms por frame</div>
+  </div>
+</div>
+<div class="g4" style="margin-bottom:16px">
+  <div class="card">
+    <div class="lbl">Vehiculos avg</div>
+    <div class="val" id="vveh" style="color:var(--purple)">-</div>
+    <div class="sub2" id="scong">congestion: -</div>
+  </div>
+  <div class="card" style="grid-column:span 3">
+    <div class="lbl" style="margin-bottom:4px">Estado del nodo</div>
+    <div style="font-size:12px;color:var(--muted)" id="ntag2">-</div>
+  </div>
+</div>
+
+<div class="g2">
+  <div class="card">
+    <div class="ct">QoS por Dimension</div>
+    <div class="qr"><span class="qn">Latencia (35%)</span><div class="qb"><div class="qbf" id="qlat" style="background:var(--blue)"></div></div><span class="qv" id="nlat">-</span></div>
+    <div class="qr"><span class="qn">CPU (25%)</span><div class="qb"><div class="qbf" id="qcpu" style="background:var(--cyan)"></div></div><span class="qv" id="ncpu">-</span></div>
+    <div class="qr"><span class="qn">Memoria (25%)</span><div class="qb"><div class="qbf" id="qmem" style="background:var(--yellow)"></div></div><span class="qv" id="nmem">-</span></div>
+    <div class="qr"><span class="qn">Throughput (10%)</span><div class="qb"><div class="qbf" id="qthr" style="background:var(--purple)"></div></div><span class="qv" id="nthr">-</span></div>
+    <div class="qr"><span class="qn">Aceptacion (5%)</span><div class="qb"><div class="qbf" id="qrej" style="background:var(--green)"></div></div><span class="qv" id="nrej">-</span></div>
+    <div style="margin-top:12px;font-size:11px;color:var(--muted)" id="ntag">-</div>
+    <div style="margin-top:6px;font-size:11px;color:var(--muted)">
+      CPU normal: <span id="cpu-normal">50</span>% &nbsp;|&nbsp; critico: <span id="cpu-critical">80</span>%
+      &nbsp;|&nbsp; Mem normal: <span id="mem-normal">250</span>MB &nbsp;|&nbsp; critico: <span id="mem-critical">450</span>MB
+    </div>
+  </div>
+  <div class="card"><div class="ct">Congestion % (historial)</div><canvas id="ccong"></canvas></div>
+</div>
+
+<div class="g2">
+  <div class="card"><div class="ct">QoS Composite</div><canvas id="cqos"></canvas></div>
+  <div class="card"><div class="ct">Latencia frames (ms)</div><canvas id="clat"></canvas></div>
+</div>
+<div class="g2">
+  <div class="card"><div class="ct">CPU %</div><canvas id="ccpu"></canvas></div>
+  <div class="card"><div class="ct">Throughput (frames/s)</div><canvas id="cthr"></canvas></div>
+</div>
+
+<script>
+const THRESH = 0.50;
+
+function mkChart(id, color, yMax) {
+  const ctx = document.getElementById(id).getContext('2d');
+  return new Chart(ctx, {
+    type: 'line',
+    data: { labels: [], datasets: [{ data: [], borderColor: color,
+      backgroundColor: color + '22', fill: true, tension: .3,
+      pointRadius: 0, borderWidth: 2 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 200 },
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#64748b', font: { size: 9 }, maxTicksLimit: 6 }, grid: { color: '#1e293b' } },
+        y: { min: 0, max: yMax, ticks: { color: '#64748b', font: { size: 9 } }, grid: { color: '#334155' } }
+      }
+    }
+  });
+}
+
+const charts = {
+  qos:  mkChart('cqos',  '#22c55e', 1),
+  lat:  mkChart('clat',  '#3b82f6', 2000),
+  cpu:  mkChart('ccpu',  '#06b6d4', 100),
+  thr:  mkChart('cthr',  '#a855f7', 10),
+  cong: mkChart('ccong', '#eab308', 100)
+};
+
+function upd(c, labels, data) {
+  c.data.labels = labels;
+  c.data.datasets[0].data = data;
+  c.update('none');
+}
+function qc(v) { return v >= .7 ? 'var(--green)' : v >= .5 ? 'var(--yellow)' : 'var(--red)'; }
+function cc(v) { return v < 60  ? 'var(--cyan)'  : v < 80  ? 'var(--yellow)' : 'var(--red)'; }
+
+function mc(v) { return v >= .7 ? 'var(--green)' : v >= .4 ? 'var(--yellow)' : 'var(--red)'; }
+
+function render(d) {
+  const q = d.composite, c = d.cpu_percent, l = (d.avg_proc_time * 1000).toFixed(0);
+  const mem = d.mem_mb || 0;
+  const memNorm = d.mem_normal || 250, memCrit = d.mem_critical || 450;
+
+  document.getElementById('vqos').textContent = q.toFixed(3);
+  document.getElementById('vqos').style.color = qc(q);
+  document.getElementById('bqos').style.width = (q * 100) + '%';
+  document.getElementById('bqos').style.background = qc(q);
+
+  document.getElementById('vcpu').textContent = c.toFixed(1) + '%';
+  document.getElementById('vcpu').style.color = cc(c);
+  document.getElementById('bcpu').style.width = c + '%';
+  document.getElementById('bcpu').style.background = cc(c);
+  document.getElementById('scpu').textContent = d.node || '';
+
+  // Memoria
+  var memPct = Math.min(100, (mem / memCrit) * 100);
+  var memColor = mc(d.memory_score !== undefined ? d.memory_score : 1);
+  document.getElementById('vmem').textContent = mem.toFixed(0) + 'MB';
+  document.getElementById('vmem').style.color = memColor;
+  document.getElementById('bmem').style.width = memPct + '%';
+  document.getElementById('bmem').style.background = memColor;
+  document.getElementById('smem').textContent = 'normal: ' + memNorm + 'MB  critico: ' + memCrit + 'MB';
+
+  document.getElementById('vlat').textContent = l + 'ms';
+  document.getElementById('vveh').textContent = (d.vehicle_count_avg || 0).toFixed(1);
+  document.getElementById('scong').textContent = 'congestion: ' + ((d.congestion_avg || 0) * 100).toFixed(1) + '%';
+
+  ['lat','cpu','mem','thr','rej'].forEach(function(k, i) {
+    var vals = [d.latency_score, d.cpu_score, d.memory_score, d.throughput_score, d.rejection_rate];
+    var v = vals[i] || 0;
+    document.getElementById('q' + k).style.width = (v * 100) + '%';
+    document.getElementById('n' + k).textContent = v.toFixed(2);
+  });
+
+  var nodeInfo = 'nodo: ' + (d.node || '-') + '  requests: ' + d.total_requests + '  errores: ' + d.error_count;
+  document.getElementById('ntag').textContent = nodeInfo;
+  if (document.getElementById('ntag2')) document.getElementById('ntag2').textContent = nodeInfo;
+
+  // Mostrar thresholds configurados
+  if (d.cpu_normal !== undefined)   document.getElementById('cpu-normal').textContent   = d.cpu_normal;
+  if (d.cpu_critical !== undefined) document.getElementById('cpu-critical').textContent = d.cpu_critical;
+  if (d.mem_normal !== undefined)   document.getElementById('mem-normal').textContent   = d.mem_normal;
+  if (d.mem_critical !== undefined) document.getElementById('mem-critical').textContent = d.mem_critical;
+
+  var dot  = document.getElementById('dot');
+  var info = document.getElementById('info');
+  if (q < THRESH) {
+    dot.style.background  = 'var(--red)';
+    info.textContent = 'QoS CRITICO - candidato para migracion a vm1node';
+  } else {
+    dot.style.background  = 'var(--green)';
+    info.textContent = 'Nodo: ' + (d.node || '-') + '  uptime: ' + fmtUptime(d.uptime_s || 0);
+  }
+
+  if (d.history) {
+    var h = d.history, ts = h.timestamps || [];
+    upd(charts.qos,  ts, h.composite  || []);
+    upd(charts.lat,  ts, h.latency    || []);
+    upd(charts.cpu,  ts, h.cpu        || []);
+    upd(charts.thr,  ts, h.throughput || []);
+    upd(charts.cong, ts, h.congestion || []);
+    var mx = Math.max.apply(null, (h.latency || [0]).concat([200]));
+    charts.lat.options.scales.y.max = Math.ceil(mx * 1.3 / 100) * 100;
+    charts.lat.update('none');
+  }
+}
+
+function fmtUptime(s) {
+  var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return (h > 0 ? h + 'h ' : '') + m + 'm ' + sec + 's';
+}
+
+function connect() {
+  var es = new EventSource('/stream');
+  es.onmessage = function(e) { try { render(JSON.parse(e.data)); } catch(err) {} };
+  es.onerror   = function()  {
+    document.getElementById('dot').style.background = 'var(--red)';
+    setTimeout(connect, 3000);
+  };
+}
+connect();
+</script>
+</body>
+</html>

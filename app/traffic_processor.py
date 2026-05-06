@@ -27,20 +27,27 @@ logger = logging.getLogger("traffic-processor")
 SERVICE_NAME            = os.getenv("SERVICE_NAME",               "traffic-processor-r3")
 OTEL_ENDPOINT           = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT","http://otel-collector.observability:4318")
 PORT                    = int(os.getenv("PORT",                   "8080"))
-QOS_LATENCY_BASELINE    = float(os.getenv("QOS_LATENCY_BASELINE", "0.3"))
-QOS_THROUGHPUT_BASELINE = float(os.getenv("QOS_THROUGHPUT_BASELINE","2.0"))
-QOS_WINDOW_SECONDS      = int(os.getenv("QOS_WINDOW_SECONDS",    "30"))
-SERVER_PIPELINE_REPEATS = int(os.getenv("SERVER_PIPELINE_REPEATS","5"))
-MAX_IMAGE_MB            = float(os.getenv("MAX_IMAGE_MB",        "10.0"))
-OTEL_EXPORT_INTERVAL_MS = int(os.getenv("OTEL_EXPORT_INTERVAL_MS","5000"))
+QOS_LATENCY_BASELINE    = float(os.getenv("QOS_LATENCY_BASELINE",    "0.3"))
+QOS_THROUGHPUT_BASELINE = float(os.getenv("QOS_THROUGHPUT_BASELINE",  "2.0"))
+QOS_WINDOW_SECONDS      = int(os.getenv("QOS_WINDOW_SECONDS",         "30"))
+SERVER_PIPELINE_REPEATS = int(os.getenv("SERVER_PIPELINE_REPEATS",    "5"))
+MAX_IMAGE_MB            = float(os.getenv("MAX_IMAGE_MB",             "10.0"))
+OTEL_EXPORT_INTERVAL_MS = int(os.getenv("OTEL_EXPORT_INTERVAL_MS",   "5000"))
+# CPU thresholds — score=1.0 por debajo de NORMAL, 0.0 en CRITICAL
+QOS_CPU_NORMAL          = float(os.getenv("QOS_CPU_NORMAL",  "50"))  # % CPU normal
+QOS_CPU_CRITICAL        = float(os.getenv("QOS_CPU_CRITICAL","80"))  # % CPU → migrar
+# Memoria (RSS del proceso en MB) — RPi3 explota ~700MB a nivel nodo
+QOS_MEM_NORMAL_MB       = float(os.getenv("QOS_MEM_NORMAL_MB",  "250"))  # MB RSS normal
+QOS_MEM_CRITICAL_MB     = float(os.getenv("QOS_MEM_CRITICAL_MB","450"))  # MB RSS → migrar
 
 # ── QoS state ─────────────────────────────────────────────────────────────────
 qos_lock = threading.Lock()
 processing_events: collections.deque = collections.deque()
 qos_state = dict(
-    latency_score=1.0, cpu_score=1.0, throughput_score=1.0,
-    rejection_rate=1.0, composite=1.0, avg_proc_time=0.0,
-    cpu_percent=0.0, total_requests=0, error_count=0,
+    latency_score=1.0, cpu_score=1.0, memory_score=1.0,
+    throughput_score=1.0, rejection_rate=1.0, composite=1.0,
+    avg_proc_time=0.0, cpu_percent=0.0, mem_mb=0.0,
+    total_requests=0, error_count=0,
     vehicle_count_avg=0.0, congestion_avg=0.0,
     node=SERVICE_NAME, uptime_s=0,
 )
@@ -80,26 +87,52 @@ def compute_qos_loop():
 
         avg_proc = sum(proc_times) / len(proc_times)
         cpu      = psutil.cpu_percent(interval=None)
+        mem_mb   = psutil.Process().memory_info().rss / (1024 * 1024)
 
-        latency_score    = min(1.0, QOS_LATENCY_BASELINE / avg_proc) if avg_proc > 0 else 1.0
-        cpu_score        = max(0.0, 1.0 - cpu / 100.0)
+        # Latencia
+        latency_score = min(1.0, QOS_LATENCY_BASELINE / avg_proc) if avg_proc > 0 else 1.0
+
+        # CPU — zona normal sin penalización, caída lineal hasta crítico
+        if cpu <= QOS_CPU_NORMAL:
+            cpu_score = 1.0
+        elif cpu >= QOS_CPU_CRITICAL:
+            cpu_score = 0.0
+        else:
+            cpu_score = 1.0 - (cpu - QOS_CPU_NORMAL) / (QOS_CPU_CRITICAL - QOS_CPU_NORMAL)
+
+        # Memoria RSS — misma lógica que CPU
+        # RPi3: a ~450MB RSS el pod está cerca del límite de 512Mi
+        if mem_mb <= QOS_MEM_NORMAL_MB:
+            memory_score = 1.0
+        elif mem_mb >= QOS_MEM_CRITICAL_MB:
+            memory_score = 0.0
+        else:
+            memory_score = 1.0 - (mem_mb - QOS_MEM_NORMAL_MB) / (QOS_MEM_CRITICAL_MB - QOS_MEM_NORMAL_MB)
+
         wt               = len(events)
         rejection_rate   = max(0.0, 1.0 - (wt - sum(successes)) / wt)
         elapsed_w        = now - events[0][0] if len(events) > 1 else 1.0
         throughput_score = min(1.0, (wt / max(elapsed_w, 1)) / QOS_THROUGHPUT_BASELINE)
 
-        composite = (latency_score * 0.40 + cpu_score * 0.30
-                     + throughput_score * 0.15 + rejection_rate * 0.15)
+        # Pesos recalibrados para incluir memoria:
+        #   latencia 35% · CPU 25% · memoria 25% · throughput 10% · rechazo 5%
+        composite = (latency_score    * 0.35
+                   + cpu_score        * 0.25
+                   + memory_score     * 0.25
+                   + throughput_score * 0.10
+                   + rejection_rate   * 0.05)
 
         with qos_lock:
             qos_state.update(
                 latency_score=round(latency_score, 4),
                 cpu_score=round(cpu_score, 4),
+                memory_score=round(memory_score, 4),
                 throughput_score=round(throughput_score, 4),
                 rejection_rate=round(rejection_rate, 4),
                 composite=round(composite, 4),
                 avg_proc_time=round(avg_proc, 4),
                 cpu_percent=round(cpu, 2),
+                mem_mb=round(mem_mb, 1),
                 vehicle_count_avg=round(sum(vehicles)/len(vehicles), 2) if vehicles else 0,
                 congestion_avg=round(sum(congestions)/len(congestions), 4) if congestions else 0,
                 uptime_s=int(now - _start_time),
@@ -117,7 +150,11 @@ def compute_qos_loop():
 
         with qos_lock:
             snap = dict(qos_state)
-        snap["history"] = {k: list(v) for k, v in history.items()}
+        snap["history"]      = {k: list(v) for k, v in history.items()}
+        snap["cpu_normal"]   = QOS_CPU_NORMAL      # para mostrarlo en el dashboard
+        snap["cpu_critical"] = QOS_CPU_CRITICAL
+        snap["mem_normal"]   = QOS_MEM_NORMAL_MB
+        snap["mem_critical"] = QOS_MEM_CRITICAL_MB
         _broadcast_sse(snap)
 
         logger.info(f"QoS composite={composite:.3f} cpu={cpu:.1f}% "
@@ -168,8 +205,9 @@ def _init_otel_background():
                         qos_state[name], {"service": SERVICE_NAME})
             return cb
 
-        for name in ("composite","latency_score","cpu_score","throughput_score",
-                     "rejection_rate","cpu_percent","avg_proc_time"):
+        for name in ("composite","latency_score","cpu_score","memory_score",
+                     "throughput_score","rejection_rate","cpu_percent",
+                     "avg_proc_time","mem_mb"):
             meter.create_observable_gauge(f"qos_{name}", callbacks=[obs(name)])
         meter.create_observable_gauge("traffic_vehicle_count_avg",
                                       callbacks=[obs("vehicle_count_avg")])
@@ -361,149 +399,4 @@ async def sse_stream(request: Request):
                 if await request.is_disconnected():
                     break
                 try:
-                    msg = await asyncio.wait_for(queue.get(), timeout=15)
-                    yield msg
-                except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
-        finally:
-            with sse_lock:
-                if queue in sse_subscribers:
-                    sse_subscribers.remove(queue)
-
-    return StreamingResponse(generator(), media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
-                 "Access-Control-Allow-Origin": "*"})
-
-
-# ── Dashboard HTML ────────────────────────────────────────────────────────────
-@app.get("/dashboard", response_class=HTMLResponse)
-def dashboard():
-    return HTMLResponse(content=DASHBOARD_HTML)
-
-
-DASHBOARD_HTML = (
-    "<!DOCTYPE html>"
-    "<html lang='es'>"
-    "<head>"
-    "<meta charset='UTF-8'>"
-    "<meta name='viewport' content='width=device-width, initial-scale=1'>"
-    "<title>Smart City Traffic</title>"
-    "<script src='https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js'></script>"
-    "<style>"
-    ":root{--bg:#0f172a;--card:#1e293b;--border:#334155;--text:#e2e8f0;--muted:#94a3b8;"
-    "--green:#22c55e;--yellow:#eab308;--red:#ef4444;--blue:#3b82f6;--cyan:#06b6d4;--purple:#a855f7}"
-    "*{box-sizing:border-box;margin:0;padding:0}"
-    "body{background:var(--bg);color:var(--text);font-family:system-ui,monospace;padding:16px}"
-    "h1{font-size:18px;font-weight:700;margin-bottom:4px}"
-    ".sub{font-size:12px;color:var(--muted);margin-bottom:20px}"
-    ".dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);"
-    "margin-right:6px;animation:pulse 1.5s infinite}"
-    "@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}"
-    ".g4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}"
-    ".g2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px}"
-    ".card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px}"
-    ".lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}"
-    ".val{font-size:28px;font-weight:700;font-variant-numeric:tabular-nums}"
-    ".sub2{font-size:11px;color:var(--muted);margin-top:3px}"
-    ".bar{height:6px;background:var(--border);border-radius:3px;margin-top:8px}"
-    ".bf{height:100%;border-radius:3px;transition:width .5s}"
-    ".ct{font-size:12px;font-weight:600;color:var(--muted);margin-bottom:10px}"
-    "canvas{max-height:160px}"
-    ".qr{display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:8px}"
-    ".qn{color:var(--muted);width:140px;flex-shrink:0}"
-    ".qb{flex:1;height:10px;background:var(--border);border-radius:5px;overflow:hidden}"
-    ".qbf{height:100%;border-radius:5px;transition:width .5s}"
-    ".qv{width:40px;text-align:right;font-size:11px;font-weight:600}"
-    "</style>"
-    "</head>"
-    "<body>"
-    "<h1><span class='dot' id='dot'></span>Smart City — Traffic Monitor</h1>"
-    "<p class='sub' id='info'>Conectando...</p>"
-    "<div class='g4'>"
-    "<div class='card'><div class='lbl'>QoS Composite</div>"
-    "<div class='val' id='vqos' style='color:var(--green)'>-</div>"
-    "<div class='bar'><div class='bf' id='bqos' style='background:var(--green);width:0'></div></div>"
-    "<div class='sub2'>umbral migración: 0.50</div></div>"
-    "<div class='card'><div class='lbl'>CPU</div>"
-    "<div class='val' id='vcpu' style='color:var(--cyan)'>-</div>"
-    "<div class='bar'><div class='bf' id='bcpu' style='background:var(--cyan);width:0'></div></div>"
-    "<div class='sub2' id='scpu'>-</div></div>"
-    "<div class='card'><div class='lbl'>Latencia</div>"
-    "<div class='val' id='vlat' style='color:var(--blue)'>-</div>"
-    "<div class='sub2'>ms por frame</div></div>"
-    "<div class='card'><div class='lbl'>Vehículos avg</div>"
-    "<div class='val' id='vveh' style='color:var(--purple)'>-</div>"
-    "<div class='sub2' id='scong'>congestión: -</div></div>"
-    "</div>"
-    "<div class='g2'>"
-    "<div class='card'><div class='ct'>QoS por Dimensión</div>"
-    "<div class='qr'><span class='qn'>Latencia (40%)</span><div class='qb'><div class='qbf' id='qlat' style='background:var(--blue)'></div></div><span class='qv' id='nlat'>-</span></div>"
-    "<div class='qr'><span class='qn'>CPU (30%)</span><div class='qb'><div class='qbf' id='qcpu' style='background:var(--cyan)'></div></div><span class='qv' id='ncpu'>-</span></div>"
-    "<div class='qr'><span class='qn'>Throughput (15%)</span><div class='qb'><div class='qbf' id='qthr' style='background:var(--purple)'></div></div><span class='qv' id='nthr'>-</span></div>"
-    "<div class='qr'><span class='qn'>Aceptación (15%)</span><div class='qb'><div class='qbf' id='qrej' style='background:var(--green)'></div></div><span class='qv' id='nrej'>-</span></div>"
-    "<div style='margin-top:12px;font-size:11px;color:var(--muted)' id='ntag'>-</div></div>"
-    "<div class='card'><div class='ct'>Congestión % (historial)</div><canvas id='ccong'></canvas></div>"
-    "</div>"
-    "<div class='g2'>"
-    "<div class='card'><div class='ct'>QoS Composite</div><canvas id='cqos'></canvas></div>"
-    "<div class='card'><div class='ct'>Latencia frames (ms)</div><canvas id='clat'></canvas></div>"
-    "</div>"
-    "<div class='g2'>"
-    "<div class='card'><div class='ct'>CPU %</div><canvas id='ccpu'></canvas></div>"
-    "<div class='card'><div class='ct'>Throughput (frames/s)</div><canvas id='cthr'></canvas></div>"
-    "</div>"
-    "<script>"
-    "const THRESH=0.50;"
-    "const mkChart=(id,color,yMax=1)=>{const c=document.getElementById(id).getContext('2d');"
-    "return new Chart(c,{type:'line',data:{labels:[],datasets:[{data:[],borderColor:color,"
-    "backgroundColor:color+'22',fill:true,tension:.3,pointRadius:0,borderWidth:2}]},"
-    "options:{responsive:true,maintainAspectRatio:false,animation:{duration:200},"
-    "plugins:{legend:{display:false}},"
-    "scales:{x:{ticks:{color:'#64748b',font:{size:9},maxTicksLimit:6},grid:{color:'#1e293b'}},"
-    "y:{min:0,max:yMax,ticks:{color:'#64748b',font:{size:9}},grid:{color:'#334155'}}}}});};"
-    "const charts={qos:mkChart('cqos','#22c55e',1),lat:mkChart('clat','#3b82f6',2000),"
-    "cpu:mkChart('ccpu','#06b6d4',100),thr:mkChart('cthr','#a855f7',10),cong:mkChart('ccong','#eab308',100)};"
-    "function upd(c,labels,data){c.data.labels=labels;c.data.datasets[0].data=data;c.update('none');}"
-    "function qc(v){return v>=.7?'var(--green)':v>=.5?'var(--yellow)':'var(--red)';}"
-    "function cc(v){return v<60?'var(--cyan)':v<80?'var(--yellow)':'var(--red)';}"
-    "function render(d){"
-    "const q=d.composite,c=d.cpu_percent,l=(d.avg_proc_time*1000).toFixed(0);"
-    "document.getElementById('vqos').textContent=q.toFixed(3);"
-    "document.getElementById('vqos').style.color=qc(q);"
-    "document.getElementById('bqos').style.width=(q*100)+'%';"
-    "document.getElementById('bqos').style.background=qc(q);"
-    "document.getElementById('vcpu').textContent=c.toFixed(1)+'%';"
-    "document.getElementById('vcpu').style.color=cc(c);"
-    "document.getElementById('bcpu').style.width=c+'%';"
-    "document.getElementById('bcpu').style.background=cc(c);"
-    "document.getElementById('scpu').textContent=d.node||'';"
-    "document.getElementById('vlat').textContent=l+'ms';"
-    "document.getElementById('vveh').textContent=(d.vehicle_count_avg||0).toFixed(1);"
-    "document.getElementById('scong').textContent='congestión: '+((d.congestion_avg||0)*100).toFixed(1)+'%';"
-    "['lat','cpu','thr','rej'].forEach((k,i)=>{"
-    "const vals=[d.latency_score,d.cpu_score,d.throughput_score,d.rejection_rate];"
-    "const v=vals[i]||0;"
-    "document.getElementById('q'+k).style.width=(v*100)+'%';"
-    "document.getElementById('n'+k).textContent=v.toFixed(2);});"
-    "document.getElementById('ntag').textContent='nodo: '+(d.node||'-')+' · requests: '+d.total_requests+' · otel: '+(d.otel!==undefined?(d.otel?'ok':'init...'):'?');"
-    "const dot=document.getElementById('dot'),info=document.getElementById('info');"
-    "if(q<THRESH){dot.style.background='var(--red)';info.textContent='⚠️ QoS CRÍTICO — candidato para migración → vm1node';}"
-    "else{dot.style.background='var(--green)';info.textContent='Nodo: '+(d.node||'-')+' · frames: '+d.total_requests+' · errores: '+d.error_count;}"
-    "if(d.history){const h=d.history,ts=h.timestamps||[];"
-    "upd(charts.qos,ts,h.composite||[]);upd(charts.lat,ts,h.latency||[]);"
-    "upd(charts.cpu,ts,h.cpu||[]);upd(charts.thr,ts,h.throughput||[]);upd(charts.cong,ts,h.congestion||[]);"
-    "const mx=Math.max(...(h.latency||[0]),200);charts.lat.options.scales.y.max=Math.ceil(mx*1.3/100)*100;charts.lat.update('none');}}"
-    "function connect(){"
-    "const es=new EventSource('/stream');"
-    "es.onmessage=e=>{try{render(JSON.parse(e.data));}catch(err){}};"
-    "es.onerror=()=>{document.getElementById('dot').style.background='var(--red)';setTimeout(connect,3000);};}"
-    "connect();"
-    "</script>"
-    "</body></html>"
-)
-
-
-# ── Entry point ───────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")
+                    msg = await asyncio.wait_for(queue.get(
