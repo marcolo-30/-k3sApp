@@ -28,7 +28,8 @@ logger = logging.getLogger("traffic-processor")
 SERVICE_NAME            = os.getenv("SERVICE_NAME",                "traffic-processor-r3")
 OTEL_ENDPOINT           = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector.observability:4318")
 PORT                    = int(os.getenv("PORT",                    "8080"))
-QOS_LATENCY_BASELINE    = float(os.getenv("QOS_LATENCY_BASELINE",    "0.3"))
+QOS_LATENCY_NORMAL_S    = float(os.getenv("QOS_LATENCY_NORMAL_S",    "0.25"))  # score=1.0 en idle
+QOS_LATENCY_CRITICAL_S  = float(os.getenv("QOS_LATENCY_CRITICAL_S",  "1.445")) # score=0.0 en pico
 QOS_THROUGHPUT_BASELINE = float(os.getenv("QOS_THROUGHPUT_BASELINE",  "2.0"))
 QOS_WINDOW_SECONDS      = int(os.getenv("QOS_WINDOW_SECONDS",         "30"))
 SERVER_PIPELINE_REPEATS = int(os.getenv("SERVER_PIPELINE_REPEATS",    "5"))
@@ -135,7 +136,13 @@ def compute_qos_loop():
         mem_mb, mem_pct, mem_source = get_mem_metrics()
 
         # Latencia
-        latency_score = min(1.0, QOS_LATENCY_BASELINE / avg_proc) if avg_proc > 0 else 1.0
+        # Latencia lineal: NORMAL_S -> score=1.0 | CRITICAL_S -> score=0.0
+        if avg_proc <= QOS_LATENCY_NORMAL_S:
+            latency_score = 1.0
+        elif avg_proc >= QOS_LATENCY_CRITICAL_S:
+            latency_score = 0.0
+        else:
+            latency_score = 1.0 - (avg_proc - QOS_LATENCY_NORMAL_S) / (QOS_LATENCY_CRITICAL_S - QOS_LATENCY_NORMAL_S)
 
         # CPU lineal
         if cpu <= QOS_CPU_NORMAL:
@@ -204,6 +211,8 @@ def compute_qos_loop():
             snap = dict(qos_state)
         snap["history"]          = {k: list(v) for k, v in history.items()}
         snap["cpu_normal"]       = QOS_CPU_NORMAL
+        snap["lat_normal_ms"]    = int(QOS_LATENCY_NORMAL_S * 1000)
+        snap["lat_critical_ms"]  = int(QOS_LATENCY_CRITICAL_S * 1000)
         snap["cpu_critical"]     = QOS_CPU_CRITICAL
         snap["mem_normal_pct"]   = QOS_MEM_NORMAL_PCT
         snap["mem_critical_pct"] = QOS_MEM_CRITICAL_PCT
