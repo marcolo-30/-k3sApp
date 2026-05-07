@@ -145,23 +145,29 @@ def compute_qos_loop():
         else:
             cpu_score = 1.0 - (cpu - QOS_CPU_NORMAL) / (QOS_CPU_CRITICAL - QOS_CPU_NORMAL)
 
-        # Memoria: score=1.0 hasta NORMAL_PCT, decay exponencial hasta CRITICAL_PCT
-        # El % viene de Prometheus (= Grafana) o psutil como fallback
+        # Memoria piecewise (% de Prometheus = Grafana):
+        #   <= NORMAL_PCT (61%) : score = 1.0
+        #   65%                 : score = 0.70  (pivot)
+        #   >= CRITICAL_PCT (68.8%): score = 0.0
+        _MEM_PIVOT = 65.0
         if mem_pct <= QOS_MEM_NORMAL_PCT:
             memory_score = 1.0
         elif mem_pct >= QOS_MEM_CRITICAL_PCT:
             memory_score = 0.0
+        elif mem_pct <= _MEM_PIVOT:
+            t = (mem_pct - QOS_MEM_NORMAL_PCT) / (_MEM_PIVOT - QOS_MEM_NORMAL_PCT)
+            memory_score = 1.0 - 0.3 * t        # 1.0 → 0.70 linealmente
         else:
-            t = (mem_pct - QOS_MEM_NORMAL_PCT) / (QOS_MEM_CRITICAL_PCT - QOS_MEM_NORMAL_PCT)
-            memory_score = math.exp(-3.0 * t)
+            t = (mem_pct - _MEM_PIVOT) / (QOS_MEM_CRITICAL_PCT - _MEM_PIVOT)
+            memory_score = 0.7 * (1.0 - t)      # 0.70 → 0.0 linealmente
 
         wt               = len(events)
         rejection_rate   = max(0.0, 1.0 - (wt - sum(successes)) / wt)
         elapsed_w        = now - events[0][0] if len(events) > 1 else 1.0
         throughput_score = min(1.0, (wt / max(elapsed_w, 1)) / QOS_THROUGHPUT_BASELINE)
 
-        composite = (latency_score    * 0.35
-                   + cpu_score        * 0.25
+        composite = (latency_score    * 0.25   # reducido: r3 es lento por hardware
+                   + cpu_score        * 0.35   # aumentado: CPU es mejor indicador
                    + memory_score     * 0.25
                    + throughput_score * 0.10
                    + rejection_rate   * 0.05)
