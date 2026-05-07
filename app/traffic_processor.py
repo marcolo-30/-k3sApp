@@ -5,10 +5,10 @@ Smart City - Traffic Flow Processor  (RPi3-optimized)
 - OTEL lazy  -> servidor responde /health antes de que OTEL inicie
 - detect_vehicles con PIL puro (getdata)
 - ThreadPoolExecutor para no bloquear el event loop
-- Memory score usa psutil.virtual_memory() == memoria total del nodo
+- Memory score: exponential decay sobre total-free del nodo
 """
 
-import os, time, io, base64, threading, collections, json, asyncio, logging
+import os, time, io, base64, threading, collections, json, asyncio, logging, math
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 
@@ -32,13 +32,12 @@ QOS_WINDOW_SECONDS      = int(os.getenv("QOS_WINDOW_SECONDS",         "30"))
 SERVER_PIPELINE_REPEATS = int(os.getenv("SERVER_PIPELINE_REPEATS",    "5"))
 MAX_IMAGE_MB            = float(os.getenv("MAX_IMAGE_MB",             "10.0"))
 OTEL_EXPORT_INTERVAL_MS = int(os.getenv("OTEL_EXPORT_INTERVAL_MS",   "5000"))
-# CPU: score=1.0 hasta NORMAL, cae a 0.0 en CRITICAL
 QOS_CPU_NORMAL          = float(os.getenv("QOS_CPU_NORMAL",   "50"))
 QOS_CPU_CRITICAL        = float(os.getenv("QOS_CPU_CRITICAL", "80"))
-# Memoria nodo (total - free) — coincide con k8s_node_memory_usage_bytes
-# r3-node: normal 570-600MB, picos 660-715MB durante stress
-QOS_MEM_NORMAL_MB       = float(os.getenv("QOS_MEM_NORMAL_MB",   "600"))
-QOS_MEM_CRITICAL_MB     = float(os.getenv("QOS_MEM_CRITICAL_MB", "660"))
+# Memoria nodo (total-free): score=1.0 hasta NORMAL, decay exponencial hasta CRITICAL
+# r3-node: normal 746MB (tope observado ok), critical 800MB (antes del crash)
+QOS_MEM_NORMAL_MB       = float(os.getenv("QOS_MEM_NORMAL_MB",   "746"))
+QOS_MEM_CRITICAL_MB     = float(os.getenv("QOS_MEM_CRITICAL_MB", "800"))
 
 # ── QoS state ─────────────────────────────────────────────────────────────────
 qos_lock = threading.Lock()
@@ -61,7 +60,6 @@ history = {k: collections.deque(maxlen=HISTORY_LEN)
 
 sse_subscribers: list = []
 sse_lock = threading.Lock()
-
 _frame_hist = None
 _otel_ready = False
 
@@ -87,15 +85,13 @@ def compute_qos_loop():
 
         avg_proc = sum(proc_times) / len(proc_times)
         cpu      = psutil.cpu_percent(interval=None)
-
-        # Memoria nodo: total - free (incluye buffers+cache, coincide con monitoreo externo)
-        vm     = psutil.virtual_memory()
-        mem_mb = (vm.total - vm.free) / (1024 * 1024)
+        vm       = psutil.virtual_memory()
+        mem_mb   = (vm.total - vm.free) / (1024 * 1024)
 
         # Latencia
         latency_score = min(1.0, QOS_LATENCY_BASELINE / avg_proc) if avg_proc > 0 else 1.0
 
-        # CPU
+        # CPU lineal
         if cpu <= QOS_CPU_NORMAL:
             cpu_score = 1.0
         elif cpu >= QOS_CPU_CRITICAL:
@@ -103,20 +99,21 @@ def compute_qos_loop():
         else:
             cpu_score = 1.0 - (cpu - QOS_CPU_NORMAL) / (QOS_CPU_CRITICAL - QOS_CPU_NORMAL)
 
-        # Memoria sistema
+        # Memoria: score=1.0 hasta NORMAL, decay exponencial hasta CRITICAL
+        # exp(-3*t): t=0 -> 1.0, t=0.5 -> 0.22, t=1.0 -> 0.05
         if mem_mb <= QOS_MEM_NORMAL_MB:
             memory_score = 1.0
         elif mem_mb >= QOS_MEM_CRITICAL_MB:
             memory_score = 0.0
         else:
-            memory_score = 1.0 - (mem_mb - QOS_MEM_NORMAL_MB) / (QOS_MEM_CRITICAL_MB - QOS_MEM_NORMAL_MB)
+            t = (mem_mb - QOS_MEM_NORMAL_MB) / (QOS_MEM_CRITICAL_MB - QOS_MEM_NORMAL_MB)
+            memory_score = math.exp(-3.0 * t)
 
         wt               = len(events)
         rejection_rate   = max(0.0, 1.0 - (wt - sum(successes)) / wt)
         elapsed_w        = now - events[0][0] if len(events) > 1 else 1.0
         throughput_score = min(1.0, (wt / max(elapsed_w, 1)) / QOS_THROUGHPUT_BASELINE)
 
-        # latencia 35% | CPU 25% | memoria 25% | throughput 10% | rechazo 5%
         composite = (latency_score    * 0.35
                    + cpu_score        * 0.25
                    + memory_score     * 0.25
@@ -212,7 +209,7 @@ def _init_otel_background():
         _otel_ready = True
         logger.info("OTEL listo -> %s", OTEL_ENDPOINT)
     except Exception as exc:
-        logger.warning("OTEL init fallido (continuando sin telemetria): %s", exc)
+        logger.warning("OTEL init fallido: %s", exc)
 
 
 # ── FastAPI ───────────────────────────────────────────────────────────────────
@@ -228,10 +225,9 @@ async def lifespan(app: FastAPI):
     _executor.shutdown(wait=False)
 
 
-app = FastAPI(title="Smart City Traffic Processor", version="1.2.0", lifespan=lifespan)
+app = FastAPI(title="Smart City Traffic Processor", version="1.3.0", lifespan=lifespan)
 
 
-# ── Modelos ───────────────────────────────────────────────────────────────────
 class FrameRequest(BaseModel):
     frame:      str
     camera_id:  str  = "cam-01"
@@ -411,7 +407,6 @@ def dashboard():
     return HTMLResponse(content=_DASHBOARD_PATH.read_text(encoding="utf-8"))
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)

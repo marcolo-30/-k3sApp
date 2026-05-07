@@ -61,29 +61,7 @@ spec:
               value: "60"
             - name: QOS_CPU_CRITICAL
               value: "90"
-            # Memoria RSS del proceso vm1 — límite pod 1Gi, más holgura
+            # Memoria nodo vm1 (total-free): score=1.0 hasta 4000MB, decay exp hasta 6000MB
             - name: QOS_MEM_NORMAL_MB
-              value: "300"
-            - name: QOS_MEM_CRITICAL_MB
-              value: "700"
-
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 8080
-            initialDelaySeconds: 15
-            periodSeconds: 10
-
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: 8080
-            initialDelaySeconds: 10
-            periodSeconds: 5
-
-          resources:
-            requests:
-              cpu:    "500m"
-              memory: "512Mi"
-            limits:
-              memory: "1Gi"
+              value: "4000"
+            - name: QOS_
