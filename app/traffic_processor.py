@@ -144,13 +144,15 @@ def compute_qos_loop():
         else:
             latency_score = 1.0 - (avg_proc - QOS_LATENCY_NORMAL_S) / (QOS_LATENCY_CRITICAL_S - QOS_LATENCY_NORMAL_S)
 
-        # CPU lineal
+        # CPU sqrt: cae despacio al inicio, mas pronunciado cerca del critico
+        # Ej: normal=50 critico=80 -> 60%=0.82, 70%=0.58, 75%=0.41
         if cpu <= QOS_CPU_NORMAL:
             cpu_score = 1.0
         elif cpu >= QOS_CPU_CRITICAL:
             cpu_score = 0.0
         else:
-            cpu_score = 1.0 - (cpu - QOS_CPU_NORMAL) / (QOS_CPU_CRITICAL - QOS_CPU_NORMAL)
+            t = (cpu - QOS_CPU_NORMAL) / (QOS_CPU_CRITICAL - QOS_CPU_NORMAL)
+            cpu_score = math.sqrt(1.0 - t)
 
         # Memoria piecewise (% de Prometheus = Grafana):
         #   <= NORMAL_PCT (64%) : score = 1.0
@@ -173,8 +175,8 @@ def compute_qos_loop():
         elapsed_w        = now - events[0][0] if len(events) > 1 else 1.0
         throughput_score = min(1.0, (wt / max(elapsed_w, 1)) / QOS_THROUGHPUT_BASELINE)
 
-        composite = (latency_score    * 0.25   # reducido: r3 es lento por hardware
-                   + cpu_score        * 0.35   # aumentado: CPU es mejor indicador
+        composite = (latency_score    * 0.35
+                   + cpu_score        * 0.25
                    + memory_score     * 0.25
                    + throughput_score * 0.10
                    + rejection_rate   * 0.05)
