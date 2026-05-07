@@ -25,7 +25,7 @@ spec:
 
       containers:
         - name: camera-simulator
-          image: ghcr.io/marcolo-30/k3sapp:2e97d147c1a3eebd72ef21b63cb061ef48aa4752
+          image: ghcr.io/marcolo-30/k3sapp:57cd00b79ca5441c160429eb7bdcea0158029314
           command: ["python", "camera_simulator.py", "--continuous"]
 
           env:
