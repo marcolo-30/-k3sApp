@@ -5,7 +5,7 @@ Smart City - Traffic Flow Processor  (RPi3-optimized)
 - OTEL lazy  -> servidor responde /health antes de que OTEL inicie
 - detect_vehicles con PIL puro (getdata)
 - ThreadPoolExecutor para no bloquear el event loop
-- Memory score: porcentaje (total-free)/total — portable entre nodos
+- Memory score: consulta Prometheus (mismo valor que Grafana) con fallback a psutil
 """
 
 import os, time, io, base64, threading, collections, json, asyncio, logging, math
@@ -13,6 +13,8 @@ from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 
 import psutil
+import urllib.request
+import urllib.parse
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
@@ -34,10 +36,13 @@ MAX_IMAGE_MB            = float(os.getenv("MAX_IMAGE_MB",             "10.0"))
 OTEL_EXPORT_INTERVAL_MS = int(os.getenv("OTEL_EXPORT_INTERVAL_MS",   "5000"))
 QOS_CPU_NORMAL          = float(os.getenv("QOS_CPU_NORMAL",   "50"))
 QOS_CPU_CRITICAL        = float(os.getenv("QOS_CPU_CRITICAL", "80"))
-# Memoria: porcentaje de (total-free)/total del nodo
-# Portable: r3 con 1GB usa ~77%, vm1 con 7GB usa ~30-40% -> score=1.0 automatico
-QOS_MEM_NORMAL_PCT      = float(os.getenv("QOS_MEM_NORMAL_PCT",   "75"))   # score=1.0 por debajo
-QOS_MEM_CRITICAL_PCT    = float(os.getenv("QOS_MEM_CRITICAL_PCT", "88"))   # score=0.0 en este punto
+# Umbrales de memoria en % — misma escala que Grafana (via Prometheus)
+QOS_MEM_NORMAL_PCT      = float(os.getenv("QOS_MEM_NORMAL_PCT",   "70"))
+QOS_MEM_CRITICAL_PCT    = float(os.getenv("QOS_MEM_CRITICAL_PCT", "80"))
+# Prometheus para leer memoria igual que Grafana
+PROMETHEUS_URL          = os.getenv("PROMETHEUS_URL", "http://192.168.0.42:9090")
+# Nombre del nodo en las métricas k8s (label k8s_node_name)
+K8S_NODE_NAME           = os.getenv("K8S_NODE_NAME", "r3-node")
 
 # ── QoS state ─────────────────────────────────────────────────────────────────
 qos_lock = threading.Lock()
@@ -46,6 +51,7 @@ qos_state = dict(
     latency_score=1.0, cpu_score=1.0, memory_score=1.0,
     throughput_score=1.0, rejection_rate=1.0, composite=1.0,
     avg_proc_time=0.0, cpu_percent=0.0, mem_mb=0.0, mem_pct=0.0,
+    mem_source="psutil",
     total_requests=0, error_count=0,
     vehicle_count_avg=0.0, congestion_avg=0.0,
     node=SERVICE_NAME, uptime_s=0,
@@ -62,6 +68,47 @@ sse_subscribers: list = []
 sse_lock = threading.Lock()
 _frame_hist = None
 _otel_ready = False
+
+
+# ── Memoria desde Prometheus (= mismo valor que Grafana) ─────────────────────
+def _query_prometheus_mem() -> tuple:
+    """
+    Retorna (mem_mb, mem_pct) usando la misma formula que el panel de Grafana:
+      usage / (usage + available) * 100
+    Lanza excepcion si Prometheus no responde -> caller usa psutil como fallback.
+    """
+    def prom_query(expr: str) -> float:
+        url = PROMETHEUS_URL + "/api/v1/query?query=" + urllib.parse.quote(expr)
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=3) as r:
+            data = json.loads(r.read())
+        result = data["data"]["result"]
+        if not result:
+            raise ValueError("no data")
+        return float(result[0]["value"][1])
+
+    node   = K8S_NODE_NAME
+    usage  = prom_query(f'k8s_node_memory_usage_bytes{{k8s_node_name="{node}"}}')
+    avail  = prom_query(f'k8s_node_memory_available_bytes{{k8s_node_name="{node}"}}')
+    mem_mb  = usage / (1024 * 1024)
+    mem_pct = usage / (usage + avail) * 100
+    return mem_mb, mem_pct
+
+
+def get_mem_metrics() -> tuple:
+    """
+    Intenta Prometheus primero. Si falla usa psutil como fallback.
+    Retorna (mem_mb, mem_pct, source)
+    """
+    try:
+        mem_mb, mem_pct = _query_prometheus_mem()
+        return mem_mb, mem_pct, "prometheus"
+    except Exception as e:
+        logger.warning("Prometheus mem fallback a psutil: %s", e)
+        vm = psutil.virtual_memory()
+        mem_mb  = (vm.total - vm.available) / (1024 * 1024)
+        mem_pct = (vm.total - vm.available) / vm.total * 100
+        return mem_mb, mem_pct, "psutil"
 
 
 # ── QoS compute loop ──────────────────────────────────────────────────────────
@@ -83,11 +130,9 @@ def compute_qos_loop():
         vehicles    = [e[3] for e in events]
         congestions = [e[4] for e in events]
 
-        avg_proc = sum(proc_times) / len(proc_times)
-        cpu      = psutil.cpu_percent(interval=None)
-        vm       = psutil.virtual_memory()
-        mem_mb   = (vm.total - vm.available) / (1024 * 1024)  # igual que k8s_node_memory_usage_bytes
-        mem_pct  = (vm.total - vm.available) / vm.total * 100  # igual que Grafana %
+        avg_proc              = sum(proc_times) / len(proc_times)
+        cpu                   = psutil.cpu_percent(interval=None)
+        mem_mb, mem_pct, mem_source = get_mem_metrics()
 
         # Latencia
         latency_score = min(1.0, QOS_LATENCY_BASELINE / avg_proc) if avg_proc > 0 else 1.0
@@ -101,8 +146,7 @@ def compute_qos_loop():
             cpu_score = 1.0 - (cpu - QOS_CPU_NORMAL) / (QOS_CPU_CRITICAL - QOS_CPU_NORMAL)
 
         # Memoria: score=1.0 hasta NORMAL_PCT, decay exponencial hasta CRITICAL_PCT
-        # Portable entre nodos: r3 (1GB) y vm1 (7GB) usan el mismo codigo,
-        # solo varian los umbrales de porcentaje via env vars.
+        # El % viene de Prometheus (= Grafana) o psutil como fallback
         if mem_pct <= QOS_MEM_NORMAL_PCT:
             memory_score = 1.0
         elif mem_pct >= QOS_MEM_CRITICAL_PCT:
@@ -134,6 +178,7 @@ def compute_qos_loop():
                 cpu_percent      = round(cpu,              2),
                 mem_mb           = round(mem_mb,           1),
                 mem_pct          = round(mem_pct,          1),
+                mem_source       = mem_source,
                 vehicle_count_avg= round(sum(vehicles)/len(vehicles), 2) if vehicles else 0,
                 congestion_avg   = round(sum(congestions)/len(congestions), 4) if congestions else 0,
                 uptime_s         = int(now - _start_time),
@@ -151,16 +196,15 @@ def compute_qos_loop():
 
         with qos_lock:
             snap = dict(qos_state)
-        snap["history"]       = {k: list(v) for k, v in history.items()}
-        snap["cpu_normal"]    = QOS_CPU_NORMAL
-        snap["cpu_critical"]  = QOS_CPU_CRITICAL
+        snap["history"]          = {k: list(v) for k, v in history.items()}
+        snap["cpu_normal"]       = QOS_CPU_NORMAL
+        snap["cpu_critical"]     = QOS_CPU_CRITICAL
         snap["mem_normal_pct"]   = QOS_MEM_NORMAL_PCT
         snap["mem_critical_pct"] = QOS_MEM_CRITICAL_PCT
         _broadcast_sse(snap)
 
-        logger.info("QoS composite=%.3f cpu=%.1f%% mem=%.0fMB(%.1f%%) lat=%.0fms mem_score=%.3f otel=%s",
-                    composite, cpu, mem_mb, mem_pct, avg_proc * 1000,
-                    memory_score, "ok" if _otel_ready else "init")
+        logger.info("QoS composite=%.3f cpu=%.1f%% mem=%.0fMB(%.1f%% %s) lat=%.0fms mem_score=%.3f",
+                    composite, cpu, mem_mb, mem_pct, mem_source, avg_proc * 1000, memory_score)
 
 
 def _broadcast_sse(data: dict):
@@ -228,7 +272,7 @@ async def lifespan(app: FastAPI):
     _executor.shutdown(wait=False)
 
 
-app = FastAPI(title="Smart City Traffic Processor", version="1.4.0", lifespan=lifespan)
+app = FastAPI(title="Smart City Traffic Processor", version="1.5.0", lifespan=lifespan)
 
 
 class FrameRequest(BaseModel):
@@ -400,4 +444,16 @@ async def sse_stream(request: Request):
     )
 
 
-# ── Dashboard ────────────────────────────────────────────�
+# ── Dashboard ─────────────────────────────────────────────────────────────────
+import pathlib as _pathlib
+_DASHBOARD_PATH = _pathlib.Path(__file__).parent / "dashboard.html"
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard():
+    return HTMLResponse(content=_DASHBOARD_PATH.read_text(encoding="utf-8"))
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
