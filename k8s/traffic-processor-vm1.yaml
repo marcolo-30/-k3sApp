@@ -64,4 +64,26 @@ spec:
             # Memoria nodo vm1 (total-free): score=1.0 hasta 4000MB, decay exp hasta 6000MB
             - name: QOS_MEM_NORMAL_MB
               value: "4000"
-            - name: QOS_
+            - name: QOS_MEM_CRITICAL_MB
+              value: "6000"
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+
+          resources:
+            requests:
+              cpu:    "500m"
+              memory: "512Mi"
+            limits:
+              memory: "1Gi"
