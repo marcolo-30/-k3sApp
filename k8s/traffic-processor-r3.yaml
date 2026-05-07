@@ -22,7 +22,7 @@ spec:
 
       containers:
         - name: traffic-processor
-          image: ghcr.io/marcolo-30/k3sapp:b3a5aeb01e015955b32e7bc109ee483d001d997a
+          image: ghcr.io/marcolo-30/k3sapp:4e6b2004cc5a9408c50fd23974f244e3e6d31044
           command: ["python", "traffic_processor.py"]
           ports:
             - containerPort: 8080
@@ -32,8 +32,9 @@ spec:
               value: "traffic-processor-r3"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://otel-collector.observability:4318"
+            # Latencia: idle=0.25s -> score=1.0 | cargado=0.38s -> score=0.66
             - name: QOS_LATENCY_BASELINE
-              value: "0.3"
+              value: "0.25"
             - name: QOS_THROUGHPUT_BASELINE
               value: "2.0"
             - name: QOS_WINDOW_SECONDS
@@ -48,13 +49,12 @@ spec:
               value: "50"
             - name: QOS_CPU_CRITICAL
               value: "80"
-            # Memoria: % leido desde Prometheus (= Grafana). Sin offset.
-            # r3-node oscila 61-70% en Grafana -> normal=70, critico=80
+            # Memoria desde Prometheus (= Grafana, sin offset)
+            # idle=60% -> score=1.0 | stress=68.6% -> score~0.33 | critico=80%
             - name: QOS_MEM_NORMAL_PCT
-              value: "70"
+              value: "62"
             - name: QOS_MEM_CRITICAL_PCT
               value: "80"
-            # Prometheus y nombre del nodo para la query de memoria
             - name: PROMETHEUS_URL
               value: "http://192.168.0.42:9090"
             - name: K8S_NODE_NAME
