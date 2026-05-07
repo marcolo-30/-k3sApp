@@ -5,7 +5,7 @@ Smart City - Traffic Flow Processor  (RPi3-optimized)
 - OTEL lazy  -> servidor responde /health antes de que OTEL inicie
 - detect_vehicles con PIL puro (getdata)
 - ThreadPoolExecutor para no bloquear el event loop
-- Memory score: exponential decay sobre total-free del nodo
+- Memory score: porcentaje (total-free)/total — portable entre nodos
 """
 
 import os, time, io, base64, threading, collections, json, asyncio, logging, math
@@ -34,10 +34,10 @@ MAX_IMAGE_MB            = float(os.getenv("MAX_IMAGE_MB",             "10.0"))
 OTEL_EXPORT_INTERVAL_MS = int(os.getenv("OTEL_EXPORT_INTERVAL_MS",   "5000"))
 QOS_CPU_NORMAL          = float(os.getenv("QOS_CPU_NORMAL",   "50"))
 QOS_CPU_CRITICAL        = float(os.getenv("QOS_CPU_CRITICAL", "80"))
-# Memoria nodo (total-free): score=1.0 hasta NORMAL, decay exponencial hasta CRITICAL
-# r3-node: normal 746MB (tope observado ok), critical 800MB (antes del crash)
-QOS_MEM_NORMAL_MB       = float(os.getenv("QOS_MEM_NORMAL_MB",   "746"))
-QOS_MEM_CRITICAL_MB     = float(os.getenv("QOS_MEM_CRITICAL_MB", "800"))
+# Memoria: porcentaje de (total-free)/total del nodo
+# Portable: r3 con 1GB usa ~77%, vm1 con 7GB usa ~30-40% -> score=1.0 automatico
+QOS_MEM_NORMAL_PCT      = float(os.getenv("QOS_MEM_NORMAL_PCT",   "75"))   # score=1.0 por debajo
+QOS_MEM_CRITICAL_PCT    = float(os.getenv("QOS_MEM_CRITICAL_PCT", "88"))   # score=0.0 en este punto
 
 # ── QoS state ─────────────────────────────────────────────────────────────────
 qos_lock = threading.Lock()
@@ -45,7 +45,7 @@ processing_events: collections.deque = collections.deque()
 qos_state = dict(
     latency_score=1.0, cpu_score=1.0, memory_score=1.0,
     throughput_score=1.0, rejection_rate=1.0, composite=1.0,
-    avg_proc_time=0.0, cpu_percent=0.0, mem_mb=0.0,
+    avg_proc_time=0.0, cpu_percent=0.0, mem_mb=0.0, mem_pct=0.0,
     total_requests=0, error_count=0,
     vehicle_count_avg=0.0, congestion_avg=0.0,
     node=SERVICE_NAME, uptime_s=0,
@@ -87,6 +87,7 @@ def compute_qos_loop():
         cpu      = psutil.cpu_percent(interval=None)
         vm       = psutil.virtual_memory()
         mem_mb   = (vm.total - vm.free) / (1024 * 1024)
+        mem_pct  = (vm.total - vm.free) / vm.total * 100   # porcentaje nodo
 
         # Latencia
         latency_score = min(1.0, QOS_LATENCY_BASELINE / avg_proc) if avg_proc > 0 else 1.0
@@ -99,14 +100,15 @@ def compute_qos_loop():
         else:
             cpu_score = 1.0 - (cpu - QOS_CPU_NORMAL) / (QOS_CPU_CRITICAL - QOS_CPU_NORMAL)
 
-        # Memoria: score=1.0 hasta NORMAL, decay exponencial hasta CRITICAL
-        # exp(-3*t): t=0 -> 1.0, t=0.5 -> 0.22, t=1.0 -> 0.05
-        if mem_mb <= QOS_MEM_NORMAL_MB:
+        # Memoria: score=1.0 hasta NORMAL_PCT, decay exponencial hasta CRITICAL_PCT
+        # Portable entre nodos: r3 (1GB) y vm1 (7GB) usan el mismo codigo,
+        # solo varian los umbrales de porcentaje via env vars.
+        if mem_pct <= QOS_MEM_NORMAL_PCT:
             memory_score = 1.0
-        elif mem_mb >= QOS_MEM_CRITICAL_MB:
+        elif mem_pct >= QOS_MEM_CRITICAL_PCT:
             memory_score = 0.0
         else:
-            t = (mem_mb - QOS_MEM_NORMAL_MB) / (QOS_MEM_CRITICAL_MB - QOS_MEM_NORMAL_MB)
+            t = (mem_pct - QOS_MEM_NORMAL_PCT) / (QOS_MEM_CRITICAL_PCT - QOS_MEM_NORMAL_PCT)
             memory_score = math.exp(-3.0 * t)
 
         wt               = len(events)
@@ -131,6 +133,7 @@ def compute_qos_loop():
                 avg_proc_time    = round(avg_proc,         4),
                 cpu_percent      = round(cpu,              2),
                 mem_mb           = round(mem_mb,           1),
+                mem_pct          = round(mem_pct,          1),
                 vehicle_count_avg= round(sum(vehicles)/len(vehicles), 2) if vehicles else 0,
                 congestion_avg   = round(sum(congestions)/len(congestions), 4) if congestions else 0,
                 uptime_s         = int(now - _start_time),
@@ -148,16 +151,16 @@ def compute_qos_loop():
 
         with qos_lock:
             snap = dict(qos_state)
-        snap["history"]      = {k: list(v) for k, v in history.items()}
-        snap["cpu_normal"]   = QOS_CPU_NORMAL
-        snap["cpu_critical"] = QOS_CPU_CRITICAL
-        snap["mem_normal"]   = QOS_MEM_NORMAL_MB
-        snap["mem_critical"] = QOS_MEM_CRITICAL_MB
+        snap["history"]       = {k: list(v) for k, v in history.items()}
+        snap["cpu_normal"]    = QOS_CPU_NORMAL
+        snap["cpu_critical"]  = QOS_CPU_CRITICAL
+        snap["mem_normal_pct"]   = QOS_MEM_NORMAL_PCT
+        snap["mem_critical_pct"] = QOS_MEM_CRITICAL_PCT
         _broadcast_sse(snap)
 
-        logger.info("QoS composite=%.3f cpu=%.1f%% mem=%.0fMB lat=%.0fms otel=%s",
-                    composite, cpu, mem_mb, avg_proc * 1000,
-                    "ok" if _otel_ready else "init")
+        logger.info("QoS composite=%.3f cpu=%.1f%% mem=%.0fMB(%.1f%%) lat=%.0fms mem_score=%.3f otel=%s",
+                    composite, cpu, mem_mb, mem_pct, avg_proc * 1000,
+                    memory_score, "ok" if _otel_ready else "init")
 
 
 def _broadcast_sse(data: dict):
@@ -201,7 +204,7 @@ def _init_otel_background():
 
         for name in ("composite", "latency_score", "cpu_score", "memory_score",
                      "throughput_score", "rejection_rate", "cpu_percent",
-                     "avg_proc_time", "mem_mb"):
+                     "avg_proc_time", "mem_mb", "mem_pct"):
             meter.create_observable_gauge("qos_" + name, callbacks=[obs(name)])
         meter.create_observable_gauge("traffic_vehicle_count_avg", callbacks=[obs("vehicle_count_avg")])
         meter.create_observable_gauge("traffic_congestion_level",  callbacks=[obs("congestion_avg")])
@@ -225,7 +228,7 @@ async def lifespan(app: FastAPI):
     _executor.shutdown(wait=False)
 
 
-app = FastAPI(title="Smart City Traffic Processor", version="1.3.0", lifespan=lifespan)
+app = FastAPI(title="Smart City Traffic Processor", version="1.4.0", lifespan=lifespan)
 
 
 class FrameRequest(BaseModel):
@@ -363,10 +366,10 @@ async def sse_stream(request: Request):
         snap = dict(qos_state)
     with history_lock:
         snap["history"] = {k: list(v) for k, v in history.items()}
-    snap["cpu_normal"]   = QOS_CPU_NORMAL
-    snap["cpu_critical"] = QOS_CPU_CRITICAL
-    snap["mem_normal"]   = QOS_MEM_NORMAL_MB
-    snap["mem_critical"] = QOS_MEM_CRITICAL_MB
+    snap["cpu_normal"]       = QOS_CPU_NORMAL
+    snap["cpu_critical"]     = QOS_CPU_CRITICAL
+    snap["mem_normal_pct"]   = QOS_MEM_NORMAL_PCT
+    snap["mem_critical_pct"] = QOS_MEM_CRITICAL_PCT
     with sse_lock:
         sse_subscribers.append(queue)
 

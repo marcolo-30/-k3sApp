@@ -49,10 +49,10 @@ canvas{max-height:160px}
     <div class="sub2" id="scpu">-</div>
   </div>
   <div class="card">
-    <div class="lbl">Memoria RSS</div>
+    <div class="lbl">Memoria nodo</div>
     <div class="val" id="vmem" style="color:var(--yellow)">-</div>
     <div class="bar"><div class="bf" id="bmem" style="background:var(--yellow);width:0"></div></div>
-    <div class="sub2" id="smem">normal: -MB  critico: -MB</div>
+    <div class="sub2" id="smem">normal: -% critico: -%</div>
   </div>
   <div class="card">
     <div class="lbl">Latencia</div>
@@ -83,7 +83,7 @@ canvas{max-height:160px}
     <div style="margin-top:12px;font-size:11px;color:var(--muted)" id="ntag">-</div>
     <div style="margin-top:6px;font-size:11px;color:var(--muted)">
       CPU normal: <span id="cpu-normal">50</span>% &nbsp;|&nbsp; critico: <span id="cpu-critical">80</span>%
-      &nbsp;|&nbsp; Mem normal: <span id="mem-normal">250</span>MB &nbsp;|&nbsp; critico: <span id="mem-critical">450</span>MB
+      &nbsp;|&nbsp; Mem normal: <span id="mem-normal">75</span>% &nbsp;|&nbsp; critico: <span id="mem-critical">88</span>%
     </div>
   </div>
   <div class="card"><div class="ct">Congestion % (historial)</div><canvas id="ccong"></canvas></div>
@@ -140,8 +140,10 @@ function mc(v) { return v >= .7 ? 'var(--green)' : v >= .4 ? 'var(--yellow)' : '
 
 function render(d) {
   const q = d.composite, c = d.cpu_percent, l = (d.avg_proc_time * 1000).toFixed(0);
-  const mem = d.mem_mb || 0;
-  const memNorm = d.mem_normal || 250, memCrit = d.mem_critical || 450;
+  const memMb  = d.mem_mb  || 0;
+  const memPct = d.mem_pct || 0;
+  const memNormPct = d.mem_normal_pct   || 75;
+  const memCritPct = d.mem_critical_pct || 88;
 
   document.getElementById('vqos').textContent = q.toFixed(3);
   document.getElementById('vqos').style.color = qc(q);
@@ -154,14 +156,13 @@ function render(d) {
   document.getElementById('bcpu').style.background = cc(c);
   document.getElementById('scpu').textContent = d.node || '';
 
-  // Memoria
-  var memPct = Math.min(100, (mem / memCrit) * 100);
+  // Memoria: mostrar MB + %, barra basada en porcentaje del nodo
   var memColor = mc(d.memory_score !== undefined ? d.memory_score : 1);
-  document.getElementById('vmem').textContent = mem.toFixed(0) + 'MB';
+  document.getElementById('vmem').textContent = memMb.toFixed(0) + 'MB (' + memPct.toFixed(1) + '%)';
   document.getElementById('vmem').style.color = memColor;
-  document.getElementById('bmem').style.width = memPct + '%';
+  document.getElementById('bmem').style.width = Math.min(100, memPct) + '%';
   document.getElementById('bmem').style.background = memColor;
-  document.getElementById('smem').textContent = 'normal: ' + memNorm + 'MB  critico: ' + memCrit + 'MB';
+  document.getElementById('smem').textContent = 'normal: ' + memNormPct + '%  critico: ' + memCritPct + '%';
 
   document.getElementById('vlat').textContent = l + 'ms';
   document.getElementById('vveh').textContent = (d.vehicle_count_avg || 0).toFixed(1);
@@ -179,10 +180,10 @@ function render(d) {
   if (document.getElementById('ntag2')) document.getElementById('ntag2').textContent = nodeInfo;
 
   // Mostrar thresholds configurados
-  if (d.cpu_normal !== undefined)   document.getElementById('cpu-normal').textContent   = d.cpu_normal;
-  if (d.cpu_critical !== undefined) document.getElementById('cpu-critical').textContent = d.cpu_critical;
-  if (d.mem_normal !== undefined)   document.getElementById('mem-normal').textContent   = d.mem_normal;
-  if (d.mem_critical !== undefined) document.getElementById('mem-critical').textContent = d.mem_critical;
+  if (d.cpu_normal !== undefined)      document.getElementById('cpu-normal').textContent  = d.cpu_normal;
+  if (d.cpu_critical !== undefined)    document.getElementById('cpu-critical').textContent= d.cpu_critical;
+  if (d.mem_normal_pct !== undefined)  document.getElementById('mem-normal').textContent  = d.mem_normal_pct;
+  if (d.mem_critical_pct !== undefined)document.getElementById('mem-critical').textContent= d.mem_critical_pct;
 
   var dot  = document.getElementById('dot');
   var info = document.getElementById('info');

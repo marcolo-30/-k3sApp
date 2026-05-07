@@ -31,7 +31,7 @@ spec:
 
       containers:
         - name: traffic-processor
-          image: ghcr.io/marcolo-30/k3sapp:c8a672167c502a2ea564e3ca4c47636f085912fd
+          image: ghcr.io/marcolo-30/k3sapp:89ff827d961a15cf9e5b2aa44e957435a4cfec0e
           command: ["python", "traffic_processor.py"]
           ports:
             - containerPort: 8080
@@ -61,11 +61,13 @@ spec:
               value: "60"
             - name: QOS_CPU_CRITICAL
               value: "90"
-            # Memoria nodo vm1 (total-free): score=1.0 hasta 4000MB, decay exp hasta 6000MB
-            - name: QOS_MEM_NORMAL_MB
-              value: "4000"
-            - name: QOS_MEM_CRITICAL_MB
-              value: "6000"
+            # Memoria: % de (total-free)/total — portable entre nodos
+            # vm1 tiene 7395MB: uso normal ~40-50%, se pone critico si supera 80%
+            # Con estos umbrales, memory_score=1.0 siempre que este por debajo del 70%
+            - name: QOS_MEM_NORMAL_PCT
+              value: "70"
+            - name: QOS_MEM_CRITICAL_PCT
+              value: "85"
 
           livenessProbe:
             httpGet:
