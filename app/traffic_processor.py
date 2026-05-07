@@ -146,10 +146,10 @@ def compute_qos_loop():
             cpu_score = 1.0 - (cpu - QOS_CPU_NORMAL) / (QOS_CPU_CRITICAL - QOS_CPU_NORMAL)
 
         # Memoria piecewise (% de Prometheus = Grafana):
-        #   <= NORMAL_PCT (61%) : score = 1.0
-        #   65%                 : score = 0.70  (pivot)
-        #   >= CRITICAL_PCT (68.8%): score = 0.0
-        _MEM_PIVOT = 65.0
+        #   <= NORMAL_PCT (64%) : score = 1.0
+        #   68%                 : score = 0.70  (pivot)
+        #   >= CRITICAL_PCT (72%): score = 0.0
+        _MEM_PIVOT = 68.0
         if mem_pct <= QOS_MEM_NORMAL_PCT:
             memory_score = 1.0
         elif mem_pct >= QOS_MEM_CRITICAL_PCT:

@@ -32,7 +32,6 @@ spec:
               value: "traffic-processor-r3"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://otel-collector.observability:4318"
-            # Latencia: idle=0.25s->score=1.0 | cargado=0.38s->score=0.66
             - name: QOS_LATENCY_BASELINE
               value: "0.25"
             - name: QOS_THROUGHPUT_BASELINE
@@ -49,12 +48,13 @@ spec:
               value: "50"
             - name: QOS_CPU_CRITICAL
               value: "80"
-            # Memoria desde Prometheus (= Grafana, sin offset psutil)
-            # Curva piecewise: 61%=1.0 | 65%=0.70 | 68.8%=0.0
+            # Memoria desde Prometheus (= Grafana)
+            # idle real ~62.6% -> normal=64 garantiza score=1.0 en reposo
+            # curva piecewise: 64%=1.0 | 68%=0.70 | 72%=0.0
             - name: QOS_MEM_NORMAL_PCT
-              value: "61"
+              value: "64"
             - name: QOS_MEM_CRITICAL_PCT
-              value: "68.8"
+              value: "72"
             - name: PROMETHEUS_URL
               value: "http://192.168.0.42:9090"
             - name: K8S_NODE_NAME
