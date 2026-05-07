@@ -31,7 +31,7 @@ spec:
 
       containers:
         - name: traffic-processor
-          image: ghcr.io/marcolo-30/k3sapp:c09e4f25f061e14763eebf98720eaafa5f88073d
+          image: ghcr.io/marcolo-30/k3sapp:10f4b655a267d19ef97479c6f551f3f8e62b6333
           command: ["python", "traffic_processor.py"]
           ports:
             - containerPort: 8080
