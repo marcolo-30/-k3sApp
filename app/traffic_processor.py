@@ -86,8 +86,8 @@ def compute_qos_loop():
         avg_proc = sum(proc_times) / len(proc_times)
         cpu      = psutil.cpu_percent(interval=None)
         vm       = psutil.virtual_memory()
-        mem_mb   = (vm.total - vm.free) / (1024 * 1024)
-        mem_pct  = (vm.total - vm.free) / vm.total * 100   # porcentaje nodo
+        mem_mb   = (vm.total - vm.available) / (1024 * 1024)  # igual que k8s_node_memory_usage_bytes
+        mem_pct  = (vm.total - vm.available) / vm.total * 100  # igual que Grafana %
 
         # Latencia
         latency_score = min(1.0, QOS_LATENCY_BASELINE / avg_proc) if avg_proc > 0 else 1.0
@@ -400,16 +400,4 @@ async def sse_stream(request: Request):
     )
 
 
-# ── Dashboard ─────────────────────────────────────────────────────────────────
-import pathlib as _pathlib
-_DASHBOARD_PATH = _pathlib.Path(__file__).parent / "dashboard.html"
-
-
-@app.get("/dashboard", response_class=HTMLResponse)
-def dashboard():
-    return HTMLResponse(content=_DASHBOARD_PATH.read_text(encoding="utf-8"))
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+# ── Dashboard ────────────────────────────────────────────�
