@@ -50,7 +50,7 @@ qos_lock = threading.Lock()
 processing_events: collections.deque = collections.deque()
 qos_state = dict(
     latency_score=1.0, cpu_score=1.0, memory_score=1.0,
-    throughput_score=1.0, rejection_rate=1.0, composite=1.0,
+    throughput_score=1.0, rejection_rate=1.0, composite=100.0,
     avg_proc_time=0.0, cpu_percent=0.0, mem_mb=0.0, mem_pct=0.0,
     mem_source="psutil",
     total_requests=0, error_count=0,
@@ -175,11 +175,10 @@ def compute_qos_loop():
         elapsed_w        = now - events[0][0] if len(events) > 1 else 1.0
         throughput_score = min(1.0, (wt / max(elapsed_w, 1)) / QOS_THROUGHPUT_BASELINE)
 
-        composite = (latency_score    * 0.35
-                   + cpu_score        * 0.25
-                   + memory_score     * 0.25
-                   + throughput_score * 0.10
-                   + rejection_rate   * 0.05)
+        composite = (latency_score    * 0.45
+                   + cpu_score        * 0.30
+                   + throughput_score * 0.15
+                   + rejection_rate   * 0.10) * 100.0
 
         with qos_lock:
             qos_state.update(
@@ -188,7 +187,7 @@ def compute_qos_loop():
                 memory_score     = round(memory_score,     4),
                 throughput_score = round(throughput_score, 4),
                 rejection_rate   = round(rejection_rate,   4),
-                composite        = round(composite,        4),
+                composite        = round(composite,        2),
                 avg_proc_time    = round(avg_proc,         4),
                 cpu_percent      = round(cpu,              2),
                 mem_mb           = round(mem_mb,           1),
@@ -220,8 +219,8 @@ def compute_qos_loop():
         snap["mem_critical_pct"] = QOS_MEM_CRITICAL_PCT
         _broadcast_sse(snap)
 
-        logger.info("QoS composite=%.3f cpu=%.1f%% mem=%.0fMB(%.1f%% %s) lat=%.0fms mem_score=%.3f",
-                    composite, cpu, mem_mb, mem_pct, mem_source, avg_proc * 1000, memory_score)
+        logger.info("QoS composite=%.1f/100 cpu=%.1f%% mem=%.0fMB(%.1f%% %s) lat=%.0fms",
+                    composite, cpu, mem_mb, mem_pct, mem_source, avg_proc * 1000)
 
 
 def _broadcast_sse(data: dict):
@@ -392,7 +391,7 @@ async def process_frame(req: FrameRequest, request: Request):
         loop   = asyncio.get_event_loop()
         result = await loop.run_in_executor(_executor, _process_sync, raw, req.camera_id, req.operations)
         m = result.pop("_meta")
-        logger.info("[%s] attempt=%s vehicles=%s congestion=%.1f%% proc=%.3fs qos=%.3f",
+        logger.info("[%s] attempt=%s vehicles=%s congestion=%.1f%% proc=%.3fs qos=%.1f/100",
                     req.camera_id, attempt, m["count"], m["cong"]*100,
                     m["elapsed"], result["qos"]["composite"])
         return JSONResponse(result)
