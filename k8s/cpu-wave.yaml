@@ -1,0 +1,84 @@
+---
+# ── ConfigMap — edit these values and re-apply to change the wave shape ───────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cpu-wave-config
+  namespace: smartcity
+data:
+  # Phase durations (seconds)
+  CYCLE_BURN:     "300"  # 5 mins — full CPU blast
+  CYCLE_IDLE:     "300"  # 5 mins — no consumption
+
+  # CPU intensity during burn
+  CORES:          "4"    # logical cores to saturate during burn
+
+  # Workload inner-loop size (bigger = heavier per iteration)
+  LOOP_SIZE:      "200000"
+
+---
+# ── Pod ───────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cpu-wave
+  namespace: smartcity
+  labels:
+    app: cpu-wave
+spec:
+  restartPolicy: Always
+  nodeSelector:
+    kubernetes.io/hostname: r3-node
+
+  containers:
+  - name: cpu-wave
+    image: python:3.12-slim
+    envFrom:
+    - configMapRef:
+        name: cpu-wave-config
+
+    command: ["python3", "-c"]
+    args:
+    - |
+      import os, time, math, multiprocessing
+
+      BURN     = int(os.environ.get("CYCLE_BURN",    120))
+      IDLE     = int(os.environ.get("CYCLE_IDLE",    120))
+      CORES    = int(os.environ.get("CORES",           4))
+      LOOP     = int(os.environ.get("LOOP_SIZE",  200000))
+
+      def burn(stop_event, size):
+          while not stop_event.is_set():
+              sum(math.sqrt(i) * math.log(i + 1) for i in range(size))
+
+      def run_burn(duration):
+          stop = multiprocessing.Event()
+          procs = [multiprocessing.Process(target=burn, args=(stop, LOOP))
+                   for _ in range(CORES)]
+          for p in procs: p.start()
+          print(f"[cpu-wave] >>> BURN  cores={CORES}  {duration}s", flush=True)
+          time.sleep(duration)
+          stop.set()
+          for p in procs: p.join()
+
+      print(f"[cpu-wave] config  idle={IDLE}s → burn={BURN}s/{CORES}cores  (starts with idle)", flush=True)
+
+      cycle = 0
+      while True:
+          cycle += 1
+          print(f"[cpu-wave] ===== CYCLE {cycle} =====", flush=True)
+
+          # Phase 1 — idle (no consumption)
+          print(f"[cpu-wave] --- IDLE  {IDLE}s", flush=True)
+          time.sleep(IDLE)
+
+          # Phase 2 — full burn
+          run_burn(BURN)
+
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "64Mi"
+      limits:
+        cpu: "4000m"   # let it actually saturate the cores
+        memory: "128Mi"

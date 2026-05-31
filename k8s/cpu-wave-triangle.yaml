@@ -1,0 +1,82 @@
+---
+# ── ConfigMap ─────────────────────────────────────────────────────────────────
+# Triangular wave: cores ramp 0→1→2→3→4→3→2→1, STEP_DURATION s per step
+# Default: 8 steps × 75 s = 600 s cycle  (matches rectangular 5+5 min)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cpu-wave-tri-config
+  namespace: smartcity
+data:
+  STEPS:          "0,1,2,3,4,3,2,1"  # core counts per step
+  STEP_DURATION:  "75"                # seconds per step  (8×75=600s cycle)
+  LOOP_SIZE:      "200000"            # inner workload size
+
+---
+# ── Pod ───────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cpu-wave
+  namespace: smartcity
+  labels:
+    app: cpu-wave
+    wave: triangular
+spec:
+  restartPolicy: Always
+  nodeSelector:
+    kubernetes.io/hostname: r3-node
+
+  containers:
+  - name: cpu-wave
+    image: python:3.12-slim
+    envFrom:
+    - configMapRef:
+        name: cpu-wave-tri-config
+
+    command: ["python3", "-c"]
+    args:
+    - |
+      import os, time, math, multiprocessing
+
+      STEPS    = [int(x) for x in os.environ.get("STEPS", "0,1,2,3,4,3,2,1").split(",")]
+      STEP_S   = int(os.environ.get("STEP_DURATION", 75))
+      LOOP     = int(os.environ.get("LOOP_SIZE", 200000))
+      CORES_MAX = max(STEPS)
+
+      def burn(stop_event, size):
+          while not stop_event.is_set():
+              sum(math.sqrt(i) * math.log(i + 1) for i in range(size))
+
+      print(f"[tri-wave] steps={STEPS}  step_duration={STEP_S}s  "
+            f"cycle={len(STEPS)*STEP_S}s  max_cores={CORES_MAX}", flush=True)
+
+      cycle = 0
+      while True:
+          cycle += 1
+          print(f"[tri-wave] ===== CYCLE {cycle} =====", flush=True)
+          for step_idx, n_cores in enumerate(STEPS):
+              stop  = multiprocessing.Event()
+              procs = [multiprocessing.Process(target=burn, args=(stop, LOOP))
+                       for _ in range(n_cores)]
+              for p in procs:
+                  p.start()
+              label = ("idle"    if n_cores == 0
+                       else "ramp_up"   if step_idx <= STEPS.index(CORES_MAX)
+                       else "ramp_down")
+              print(f"[tri-wave] step={step_idx}  cores={n_cores}  "
+                    f"phase={label}  {STEP_S}s", flush=True)
+              time.sleep(STEP_S)
+              stop.set()
+              for p in procs:
+                  p.join(timeout=10)
+                  if p.is_alive():
+                      p.terminate()
+
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "64Mi"
+      limits:
+        cpu: "4000m"
+        memory: "128Mi"
